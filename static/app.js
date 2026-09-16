@@ -104,6 +104,7 @@ const state = {
   events: null,
   eventSort: { key: 'started_at', order: 'desc' },
   modelSort: { key: 'cost', order: 'desc' },
+  facetSig: null,
   page: 1,
   size: 100,
   drawerId: null,
@@ -347,6 +348,7 @@ function renderOverview() {
       ${assumed.map((m) => esc(m.model_id)).join('、')}</div>`);
   }
   el('ov-notice').innerHTML = notices.join('');
+  renderPriceConfig();
 
   chartBarsLine(el('ov-trend'), s.series_daily.map((d) => ({
     date: d.date, requests: d.requests, cost: d.cost, errors: d.errors, tokens: d.tokens,
@@ -515,9 +517,35 @@ function renderTopRequests() {
       <td class="num">${fmtMs(r.duration_ms)}</td></tr>`).join('')}</tbody></table>`;
 }
 
+function priceConfigHTML() {
+  const pricing = state.bootstrap?.pricing || {};
+  const ignoredModels = pricing.ignored_models || [];
+  const unknownPrice = pricing.unknown_model_price || { enabled: false };
+  const ignoredDetail = ignoredModels.length
+    ? ignoredModels.map((p) => `<code>${esc(p)}</code>`).join(' ')
+    : '<span class="muted">未配置（所有模型都参与统计）</span>';
+  const unknownDetail = unknownPrice.enabled
+    ? `<code>${esc(unknownPrice.currency || 'USD')} 输入 ${unknownPrice.input ?? '—'} / 缓存读 ${unknownPrice.cache_read ?? '—'} / 缓存写 ${unknownPrice.cache_write ?? '—'} / 输出 ${unknownPrice.output ?? '—'}（每百万 token）</code>`
+    : '<span class="muted">已禁用（未匹配规则的模型记为“未定价”，费用按 0 计）</span>';
+  return `<div class="price-config">
+    <div class="row"><span class="k">🚫 忽略模型</span><span class="v">${ignoredDetail}</span></div>
+    <div class="row"><span class="k">⚙️ 未知模型价格</span><span class="v">${unknownDetail}</span></div>
+    <div class="row"><span class="k">💰 汇率 / 展示币种</span><span class="v"><code>${esc(pricing.display_currency || 'CNY')}</code> · USD→CNY ${pricing.usd_to_cny ?? '—'}</span></div>
+    <div class="hint">改 <code>prices.json</code> 里的 <code>ignored_models</code> / <code>unknown_model_price</code> 后点“刷新”即可生效，无需重启服务。</div>
+  </div>`;
+}
+
+/** 概览页与单价表上方共用同一份配置摘要 */
+function renderPriceConfig() {
+  const ov = el('ov-price-config');
+  if (ov) ov.innerHTML = priceConfigHTML();
+}
+
 function renderPriceTable() {
   const rules = state.bootstrap?.pricing?.rules || [];
   const used = new Map((state.bootstrap?.models || []).map((m) => [m.model_id, m]));
+  const configInfo = priceConfigHTML();
+
   const body = rules.map((r) => {
     const hits = [...used.values()].filter((m) => m.pricing && m.pricing.label === (r.label || r.match));
     const n = hits.reduce((s, m) => s + m.requests, 0);
@@ -535,7 +563,7 @@ function renderPriceTable() {
       <td class="l muted" style="white-space:normal;max-width:340px">${esc(r.note || '')}</td>
     </tr>`;
   }).join('');
-  el('an-prices').innerHTML = `<div class="table-wrap"><table class="data">
+  el('an-prices').innerHTML = `${configInfo}<div class="table-wrap"><table class="data">
     <thead><tr><th class="l">规则</th><th class="l">名称</th><th class="l">币种</th>
       <th>输入</th><th>缓存读</th><th>缓存写</th><th>输出</th><th>命中请求</th><th class="l">备注</th></tr></thead>
     <tbody>${body}</tbody></table>
@@ -802,7 +830,18 @@ async function refresh({ reloadBootstrap = false } = {}) {
     el('unpriced-pill').textContent = `${unpriced} 条未定价`;
     el('btn-export').href = '/api/export.csv?' + queryString();
 
-    if (!el('f-model').options.length) buildFilters();
+    // index.html 给每个下拉框预置了一个「全部」选项，options.length 恒为 1，
+    // 拿它判断是否已填充会让 buildFilters 永远不执行。改用 facet 指纹比较。
+    const b = state.bootstrap;
+    const facetSig = JSON.stringify([
+      b.models.map((m) => m.model_id), b.facets.providers,
+      b.facets.projects.map((p) => p.value), b.facets.agents,
+      b.facets.sources, b.facets.statuses,
+    ]);
+    if (facetSig !== state.facetSig) {
+      buildFilters();
+      state.facetSig = facetSig;
+    }
 
     // 自动刷新时别把已经滚到一半的表格弹回顶部
     const scroll = captureScroll();

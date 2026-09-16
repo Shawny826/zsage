@@ -62,7 +62,10 @@ class Pricing:
         self.path = path
         self._mtime = None
         self._lock = threading.Lock()
-        self.cfg = {"display_currency": "CNY", "usd_to_cny": 7.1, "defaults": {}, "rules": []}
+        self.cfg = {
+            "display_currency": "CNY", "usd_to_cny": 7.1, "defaults": {},
+            "rules": [], "ignored_models": [], "unknown_model_price": {"enabled": False}
+        }
         self.reload(force=True)
 
     def reload(self, force: bool = False) -> None:
@@ -83,8 +86,12 @@ class Pricing:
             self._rules = [
                 (r.get("match", "*").lower(), r) for r in self.cfg.get("rules", [])
             ]
+            self._ignored = [
+                pattern.lower() for pattern in self.cfg.get("ignored_models", [])
+            ]
             self.display_currency = self.cfg.get("display_currency") or "CNY"
             self.usd_to_cny = float(self.cfg.get("usd_to_cny") or 7.1)
+            self.unknown_price = self.cfg.get("unknown_model_price", {"enabled": False})
             print(f"[prices] 载入 {len(self._rules)} 条规则 -> {self.display_currency}")
 
     # -- 换算 ------------------------------------------------------------- #
@@ -99,11 +106,32 @@ class Pricing:
             return amount / self.usd_to_cny
         return amount
 
+    def is_ignored(self, model_id: str) -> bool:
+        """检查模型是否在忽略列表中"""
+        name = (model_id or "").lower()
+        for pattern in self._ignored:
+            if fnmatchcase(name, pattern):
+                return True
+        return False
+
     def rule_for(self, model_id: str):
         name = (model_id or "").lower()
         for pattern, rule in self._rules:
             if fnmatchcase(name, pattern):
                 return rule
+        # 检查是否启用了未知模型默认价格
+        if self.unknown_price.get("enabled"):
+            return {
+                "match": "*",
+                "label": "未知模型 (默认价格)",
+                "currency": self.unknown_price.get("currency", "USD"),
+                "input": self.unknown_price.get("input", 1.0),
+                "cache_read": self.unknown_price.get("cache_read"),
+                "cache_write": self.unknown_price.get("cache_write"),
+                "output": self.unknown_price.get("output", 3.0),
+                "source": "fallback",
+                "note": self.unknown_price.get("note", "未知模型的默认价格")
+            }
         return None
 
     def _unit_prices(self, rule: dict, started_ms: int) -> dict:
@@ -169,6 +197,8 @@ class Pricing:
         return {
             "display_currency": self.display_currency,
             "usd_to_cny": self.usd_to_cny,
+            "ignored_models": self.cfg.get("ignored_models", []),
+            "unknown_model_price": self.cfg.get("unknown_model_price", {"enabled": False}),
             "rules": [
                 {
                     "match": r.get("match"),
@@ -209,6 +239,24 @@ def db_connect() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA query_only=1")
     return con
+
+
+def not_ignored_sql(con: sqlite3.Connection, column: str = "model_id"):
+    """返回 (SQL 片段, 参数)，把 ignored_models 命中的模型从聚合里一并排除。
+
+    通配符匹配只能在 Python 侧算，所以先查出库里实际出现过的 model_id，
+    再拼成 NOT IN。没有配置忽略项时返回空串，调用方拼上 `WHERE 1=1` 即可。
+    """
+    names = [
+        r["v"] for r in con.execute(
+            "SELECT DISTINCT model_id AS v FROM model_usage WHERE model_id IS NOT NULL"
+        )
+    ]
+    ignored = [m for m in names if PRICING.is_ignored(m)]
+    if not ignored:
+        return "", []
+    placeholders = ",".join("?" * len(ignored))
+    return f" AND ({column} IS NULL OR {column} NOT IN ({placeholders}))", ignored
 
 
 def parse_time(value: str, end_of_day: bool = False):
@@ -340,6 +388,9 @@ def load_requests(f: dict):
         rows = [row_to_request(r) for r in con.execute(sql, params)]
     finally:
         con.close()
+
+    # 过滤被忽略的模型
+    rows = [r for r in rows if not PRICING.is_ignored(r["model_id"])]
 
     want = f.get("priced")
     if want == "priced":
@@ -704,30 +755,41 @@ class Handler(BaseHTTPRequestHandler):
         PRICING.reload()
         con = db_connect()
         try:
+            # 被忽略的模型要从所有聚合里一并剔除，否则下拉框和"命中请求"会跟统计对不上
+            skip, skip_params = not_ignored_sql(con, "model_id")
+            skip_mu, skip_mu_params = not_ignored_sql(con, "mu.model_id")
+
             meta = con.execute(
                 "SELECT MIN(started_at) AS min_ts, MAX(started_at) AS max_ts,"
-                " COUNT(*) AS total FROM model_usage"
+                f" COUNT(*) AS total FROM model_usage WHERE 1=1{skip}",
+                skip_params,
             ).fetchone()
             groups = {}
             for row in con.execute(
                 "SELECT provider_id, model_id, COUNT(*) AS n, MAX(started_at) AS last_ts"
-                " FROM model_usage GROUP BY provider_id, model_id ORDER BY n DESC"
+                f" FROM model_usage WHERE 1=1{skip} GROUP BY provider_id, model_id ORDER BY n DESC",
+                skip_params,
             ):
                 groups.setdefault(row["model_id"], []).append(
                     {"provider_id": row["provider_id"], "requests": row["n"], "last_ts": row["last_ts"]}
                 )
             facet_sql = {
-                "providers": "SELECT DISTINCT provider_id AS v FROM model_usage ORDER BY v",
-                "agents": "SELECT DISTINCT agent AS v FROM model_usage WHERE agent IS NOT NULL ORDER BY v",
-                "sources": "SELECT DISTINCT query_source AS v FROM model_usage ORDER BY v",
-                "statuses": "SELECT DISTINCT status AS v FROM model_usage ORDER BY v",
+                "providers": "SELECT DISTINCT provider_id AS v FROM model_usage WHERE 1=1",
+                "agents": "SELECT DISTINCT agent AS v FROM model_usage WHERE agent IS NOT NULL",
+                "sources": "SELECT DISTINCT query_source AS v FROM model_usage WHERE 1=1",
+                "statuses": "SELECT DISTINCT status AS v FROM model_usage WHERE 1=1",
             }
-            facets = {k: [r["v"] for r in con.execute(sql)] for k, sql in facet_sql.items()}
+            facets = {
+                k: [r["v"] for r in con.execute(sql + skip + " ORDER BY v", skip_params)]
+                for k, sql in facet_sql.items()
+            }
             facets["projects"] = [
                 {"value": r["project_id"], "label": r["directory"], "requests": r["n"]}
                 for r in con.execute(
                     "SELECT s.project_id, s.directory, COUNT(*) AS n FROM model_usage mu"
-                    " JOIN session s ON s.id = mu.session_id GROUP BY s.project_id ORDER BY n DESC"
+                    " JOIN session s ON s.id = mu.session_id WHERE 1=1" + skip_mu
+                    + " GROUP BY s.project_id ORDER BY n DESC",
+                    skip_mu_params,
                 )
             ]
             turns = con.execute(
@@ -841,12 +903,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_live(self):
         con = db_connect()
         try:
+            skip, skip_params = not_ignored_sql(con, "mu.model_id")
             rows = [
                 row_to_request(r)
                 for r in con.execute(
                     f"SELECT {SELECT_FIELDS} FROM model_usage mu"
                     " LEFT JOIN session s ON s.id = mu.session_id"
-                    " WHERE mu.status = 'running' ORDER BY mu.started_at DESC LIMIT 20"
+                    f" WHERE mu.status = 'running'{skip} ORDER BY mu.started_at DESC LIMIT 20",
+                    skip_params,
                 )
             ]
             recent = [
@@ -854,7 +918,8 @@ class Handler(BaseHTTPRequestHandler):
                 for r in con.execute(
                     f"SELECT {SELECT_FIELDS} FROM model_usage mu"
                     " LEFT JOIN session s ON s.id = mu.session_id"
-                    " ORDER BY mu.started_at DESC LIMIT 12"
+                    f" WHERE 1=1{skip} ORDER BY mu.started_at DESC LIMIT 12",
+                    skip_params,
                 )
             ]
         finally:

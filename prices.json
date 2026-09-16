@@ -4,10 +4,21 @@
     "currency 写 CNY 或 USD 均可，汇总时统一换算成 display_currency。",
     "source=official 表示取自厂商公开价目表；source=assumed 表示按同族公开价估算，需要你确认后改成实际单价。",
     "cache_read / cache_write 留空时按 defaults 里的比例从 input 推算。",
-    "peak 用于分时定价（目前只有 DeepSeek）：命中窗口用高峰价，否则乘以 offpeak_ratio。"
+    "peak 用于分时定价（目前只有 DeepSeek）：命中窗口用高峰价，否则乘以 offpeak_ratio。",
+    "ignored_models：忽略列表，匹配到的模型请求不会计入统计和费用（支持通配符）。"
   ],
   "display_currency": "CNY",
   "usd_to_cny": 7.1,
+  "ignored_models": [],
+  "unknown_model_price": {
+    "enabled": false,
+    "currency": "USD",
+    "input": 1.0,
+    "cache_read": 0.1,
+    "cache_write": 1.0,
+    "output": 3.0,
+    "note": "未知模型的默认价格（启用后对所有未匹配规则的模型生效）"
+  },
   "defaults": {
     "cache_read_ratio": 0.1,
     "cache_write_ratio": 1.0
@@ -90,7 +101,16 @@
       "source": "official",
       "note": "DeepSeek 官方价（高峰价）：未命中 $0.30 / 命中 $0.006 / 输出 $1.20；低谷期减半",
       "peak": {
-        "windows_utc": [[1, 4], [6, 10]],
+        "windows_utc": [
+          [
+            1,
+            4
+          ],
+          [
+            6,
+            10
+          ]
+        ],
         "weekdays_only": true,
         "offpeak_ratio": 0.5
       }
@@ -106,7 +126,16 @@
       "source": "official",
       "note": "按 DeepSeek 官方 deepseek-flash 价目（高峰价），低谷减半",
       "peak": {
-        "windows_utc": [[1, 4], [6, 10]],
+        "windows_utc": [
+          [
+            1,
+            4
+          ],
+          [
+            6,
+            10
+          ]
+        ],
         "weekdays_only": true,
         "offpeak_ratio": 0.5
       }
@@ -187,6 +216,18 @@
       "output": 15,
       "source": "assumed",
       "note": "按 xAI Grok 公开价估算，官网超时取不到，请自行核对"
+    },
+    {
+      "match": "*omen-alpha*",
+      "label": "Omen Alpha",
+      "currency": "USD",
+      "input": 0.2,
+      "cache_read": 0.04,
+      "cache_write": null,
+      "output": 0.66,
+      "source": "models.dev",
+      "note": "models.dev 精确匹配：OpenCode Go / omen-alpha（同步于 2026-09-16）"
     }
-  ]
+  ],
+  "_last_sync": "2026-09-16T18:18:59"
 }

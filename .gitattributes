@@ -3,3 +3,4 @@
 *.vbs text eol=crlf
 *.png binary
 *.ico binary
+prices.json linguist-generated=true

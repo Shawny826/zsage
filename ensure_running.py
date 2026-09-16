@@ -75,7 +75,7 @@ def clear_runtime():
 
 
 def ensure(open_system_browser: bool = False, auto_shutdown: bool = False,
-           random_port: bool = False):
+           random_port: bool = False, port: int | None = None):
     runtime = read_runtime()
     if probe(runtime):
         if open_system_browser:
@@ -85,7 +85,15 @@ def ensure(open_system_browser: bool = False, auto_shutdown: bool = False,
         return 0, runtime
     clear_runtime()  # 陈旧状态（上次异常退出留下的）直接清掉
 
-    server_args = [sys.executable, SERVER, "--port", str(0 if random_port else pick_port())]
+    # 端口选择优先级：指定端口 > 随机 > 默认端口池
+    if port is not None:
+        actual_port = port
+    elif random_port:
+        actual_port = 0
+    else:
+        actual_port = pick_port()
+    
+    server_args = [sys.executable, SERVER, "--port", str(actual_port)]
     if auto_shutdown:
         # 默认常驻（关掉标签也继续跑，下次 zsage 秒开）；这个开关恢复"没人看就退出"
         server_args.append("--auto-shutdown")
