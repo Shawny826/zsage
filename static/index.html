@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZCode 用量看板</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">Z</span>
+    <div>
+      <h1>ZCode 用量看板</h1>
+      <p class="sub" id="db-info">正在读取…</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="pill" id="pricing-pill">单价表</span>
+    <span class="pill warn hidden" id="unpriced-pill"></span>
+    <label class="switch"><input type="checkbox" id="auto-refresh" checked><span>自动刷新</span></label>
+    <button id="btn-refresh">刷新</button>
+    <a class="btn" id="btn-export" href="/api/export.csv">导出 CSV</a>
+    <a class="btn" id="btn-prices" href="/api/prices" target="_blank">单价表 JSON</a>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button data-tab="overview" class="active">概览</button>
+  <button data-tab="analytics">分析</button>
+  <button data-tab="events">请求事件</button>
+</nav>
+
+<section class="filters" id="filters">
+  <div class="field">
+    <span>时间范围</span>
+    <div class="range-group" id="range-group">
+      <button data-range="today">今天</button>
+      <button data-range="7d">近 7 天</button>
+      <button data-range="30d" class="on">近 30 天</button>
+      <button data-range="all">全部</button>
+    </div>
+  </div>
+  <div class="field"><span>自定义起始</span><input type="date" id="f-from"></div>
+  <div class="field"><span>自定义结束</span><input type="date" id="f-to"></div>
+  <div class="field"><span>模型</span><select id="f-model"><option value="">全部</option></select></div>
+  <div class="field"><span>Provider</span><select id="f-provider"><option value="">全部</option></select></div>
+  <div class="field"><span>项目</span><select id="f-project"><option value="">全部</option></select></div>
+  <div class="field"><span>Agent</span><select id="f-agent"><option value="">全部</option></select></div>
+  <div class="field"><span>来源</span><select id="f-source"><option value="">全部</option></select></div>
+  <div class="field"><span>状态</span><select id="f-status"><option value="">全部</option></select></div>
+  <div class="field"><span>定价</span><select id="f-priced">
+    <option value="">全部</option><option value="priced">已定价</option><option value="unpriced">未定价</option>
+  </select></div>
+  <div class="field"><span>关键字（模型/项目/错误）</span><input type="text" id="f-q" placeholder="例如 exceed quota"></div>
+  <div class="field"><span>&nbsp;</span><button id="btn-reset">重置</button></div>
+</section>
+
+<main>
+  <div id="tab-overview" class="tab-panel">
+    <div class="stack">
+      <div class="kpis" id="ov-kpis"></div>
+      <div id="ov-notice"></div>
+      <div class="grid cols-2">
+        <div class="card">
+          <header><h2>每日请求量与费用</h2><span class="hint">柱=请求数，线=费用</span></header>
+          <div class="body"><div id="ov-trend"></div><div class="legend" id="ov-trend-legend"></div></div>
+        </div>
+        <div class="card">
+          <header><h2>费用构成</h2><span class="hint" id="ov-mix-hint"></span></header>
+          <div class="body"><div id="ov-mix"></div></div>
+        </div>
+      </div>
+      <div class="grid cols-2">
+        <div class="card">
+          <header><h2>模型费用占比</h2><span class="hint" id="ov-model-hint"></span></header>
+          <div class="body tight"><div id="ov-models"></div></div>
+        </div>
+        <div class="card">
+          <header><h2>最近请求</h2><span class="hint">含进行中</span></header>
+          <div class="body tight"><div id="ov-recent"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-analytics" class="tab-panel hidden">
+    <div class="stack">
+      <div class="card">
+        <header><h2>模型明细</h2><span class="hint">点表头排序；费用为该模型的公开 API 折算价</span></header>
+        <div class="body tight"><div id="an-model-table"></div></div>
+      </div>
+      <div class="grid cols-2">
+        <div class="card"><header><h2>每日 token 结构</h2><span class="hint">新增输入 / 缓存命中 / 输出</span></header>
+          <div class="body"><div id="an-tokens"></div><div class="legend" id="an-tokens-legend"></div></div></div>
+        <div class="card"><header><h2>时段热力图</h2><span class="hint">本地时间，按小时聚合的请求数</span></header>
+          <div class="body"><div id="an-heat"></div></div></div>
+      </div>
+      <div class="grid cols-3">
+        <div class="card"><header><h2>项目</h2></header><div class="body tight"><div id="an-projects"></div></div></div>
+        <div class="card"><header><h2>Agent</h2></header><div class="body tight"><div id="an-agents"></div></div></div>
+        <div class="card"><header><h2>请求来源</h2></header><div class="body tight"><div id="an-sources"></div></div></div>
+      </div>
+      <div class="grid cols-2">
+        <div class="card"><header><h2>缓存效率</h2><span class="hint">缓存命中带来的费用节省</span></header>
+          <div class="body" id="an-cache"></div></div>
+        <div class="card"><header><h2>最贵的请求</h2></header><div class="body tight"><div id="an-top"></div></div></div>
+      </div>
+      <div class="card">
+        <header><h2>单价表</h2><span class="hint">改 prices.json 后刷新即可生效；估算项请核对</span></header>
+        <div class="body tight"><div id="an-prices"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-events" class="tab-panel hidden">
+    <div class="stack">
+      <div class="card">
+        <header><h2>请求事件</h2><span class="hint" id="ev-hint"></span></header>
+        <div class="body tight"><div id="ev-table"></div></div>
+        <div class="pager" id="ev-pager"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<aside class="drawer hidden" id="drawer">
+  <header><h3 id="drawer-title">请求详情</h3><button class="close" id="drawer-close">×</button></header>
+  <div class="content" id="drawer-content"></div>
+</aside>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

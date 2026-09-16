@@ -1,0 +1,192 @@
+{
+  "_readme": [
+    "单价单位：每 100 万 token。match 为通配符（* 匹配任意字符，大小写不敏感），按数组顺序首次命中生效，所以例外项要写在前面。",
+    "currency 写 CNY 或 USD 均可，汇总时统一换算成 display_currency。",
+    "source=official 表示取自厂商公开价目表；source=assumed 表示按同族公开价估算，需要你确认后改成实际单价。",
+    "cache_read / cache_write 留空时按 defaults 里的比例从 input 推算。",
+    "peak 用于分时定价（目前只有 DeepSeek）：命中窗口用高峰价，否则乘以 offpeak_ratio。"
+  ],
+  "display_currency": "CNY",
+  "usd_to_cny": 7.1,
+  "defaults": {
+    "cache_read_ratio": 0.1,
+    "cache_write_ratio": 1.0
+  },
+  "rules": [
+    {
+      "match": "free/*",
+      "label": "免费通道",
+      "currency": "USD",
+      "input": 0,
+      "cache_read": 0,
+      "cache_write": 0,
+      "output": 0,
+      "source": "official",
+      "note": "站点 free 前缀通道，不计费"
+    },
+    {
+      "match": "*free*",
+      "label": "免费模型",
+      "currency": "USD",
+      "input": 0,
+      "cache_read": 0,
+      "cache_write": 0,
+      "output": 0,
+      "source": "assumed",
+      "note": "模型名含 free，按免费计（如 ox-alpha-free）"
+    },
+    {
+      "match": "*glm-5.3-flash*",
+      "label": "GLM-5.3-Flash",
+      "currency": "USD",
+      "input": 0.15,
+      "cache_read": 0.03,
+      "cache_write": 0,
+      "output": 0.5,
+      "source": "official",
+      "note": "Z.ai 公共价目：$0.15 / 缓存 $0.03 / $0.50；缓存写入限时免费"
+    },
+    {
+      "match": "*glm-5.3*",
+      "label": "GLM-5.3",
+      "currency": "USD",
+      "input": 1.4,
+      "cache_read": 0.26,
+      "cache_write": 0,
+      "output": 4.4,
+      "source": "official",
+      "note": "Z.ai 公共价目：$1.4 / 缓存 $0.26 / $4.4"
+    },
+    {
+      "match": "*glm-5.2*",
+      "label": "GLM-5.2",
+      "currency": "USD",
+      "input": 1.4,
+      "cache_read": 0.26,
+      "cache_write": 0,
+      "output": 4.4,
+      "source": "official",
+      "note": "Z.ai 公共价目：$1.4 / 缓存 $0.26 / $4.4"
+    },
+    {
+      "match": "*glm-5.1*",
+      "label": "GLM-5.1",
+      "currency": "USD",
+      "input": 1.4,
+      "cache_read": 0.26,
+      "cache_write": 0,
+      "output": 4.4,
+      "source": "official",
+      "note": "Z.ai 公共价目：$1.4 / 缓存 $0.26 / $4.4"
+    },
+    {
+      "match": "*deepseek-v4.1-flash*",
+      "label": "DeepSeek-V4.1-Flash",
+      "currency": "USD",
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0,
+      "output": 1.2,
+      "source": "official",
+      "note": "DeepSeek 官方价（高峰价）：未命中 $0.30 / 命中 $0.006 / 输出 $1.20；低谷期减半",
+      "peak": {
+        "windows_utc": [[1, 4], [6, 10]],
+        "weekdays_only": true,
+        "offpeak_ratio": 0.5
+      }
+    },
+    {
+      "match": "*deepseek-v4-flash*",
+      "label": "DeepSeek-V4-Flash",
+      "currency": "USD",
+      "input": 0.3,
+      "cache_read": 0.006,
+      "cache_write": 0,
+      "output": 1.2,
+      "source": "official",
+      "note": "按 DeepSeek 官方 deepseek-flash 价目（高峰价），低谷减半",
+      "peak": {
+        "windows_utc": [[1, 4], [6, 10]],
+        "weekdays_only": true,
+        "offpeak_ratio": 0.5
+      }
+    },
+    {
+      "match": "*claude-opus*",
+      "label": "Claude Opus",
+      "currency": "USD",
+      "input": 15,
+      "cache_read": 1.5,
+      "cache_write": 18.75,
+      "output": 75,
+      "source": "assumed",
+      "note": "按 Anthropic Opus 公开列表价估（$15/$75，缓存读 0.1x、缓存写 1.25x），官网在本机不可达，请自行核对"
+    },
+    {
+      "match": "*kimi-k3*",
+      "label": "Kimi K3",
+      "currency": "CNY",
+      "input": 20,
+      "cache_read": 2,
+      "cache_write": null,
+      "output": 100,
+      "source": "official",
+      "note": "Kimi 官方价目：¥20 / 缓存命中 ¥2 / ¥100"
+    },
+    {
+      "match": "*kimi-k2*",
+      "label": "Kimi K2.x",
+      "currency": "CNY",
+      "input": 6.5,
+      "cache_read": 1.1,
+      "cache_write": null,
+      "output": 27,
+      "source": "official",
+      "note": "Kimi 官方价目：¥6.5 / 缓存命中 ¥1.1 / ¥27"
+    },
+    {
+      "match": "*gpt-5.6*",
+      "label": "GPT-5.6",
+      "currency": "USD",
+      "input": 1.25,
+      "cache_read": 0.125,
+      "cache_write": null,
+      "output": 10,
+      "source": "assumed",
+      "note": "按 OpenAI 公开列表价估算，官网 403 取不到，请自行核对"
+    },
+    {
+      "match": "*gpt-5.5*",
+      "label": "GPT-5.5",
+      "currency": "USD",
+      "input": 1.25,
+      "cache_read": 0.125,
+      "cache_write": null,
+      "output": 10,
+      "source": "assumed",
+      "note": "按 OpenAI 公开列表价估算，官网 403 取不到，请自行核对"
+    },
+    {
+      "match": "*gemini-3.8-flash*",
+      "label": "Gemini 3.8 Flash",
+      "currency": "USD",
+      "input": 0.3,
+      "cache_read": 0.075,
+      "cache_write": null,
+      "output": 2.5,
+      "source": "assumed",
+      "note": "按 Gemini Flash 系列公开价估算，官网超时取不到，请自行核对"
+    },
+    {
+      "match": "*grok-4.6*",
+      "label": "Grok 4.6",
+      "currency": "USD",
+      "input": 3,
+      "cache_read": 0.75,
+      "cache_write": null,
+      "output": 15,
+      "source": "assumed",
+      "note": "按 xAI Grok 公开价估算，官网超时取不到，请自行核对"
+    }
+  ]
+}
