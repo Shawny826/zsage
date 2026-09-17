@@ -463,7 +463,7 @@ def _catalog_with_cache():
     import time
 
     try:
-        data = catalog.fetch_catalog(timeout=60, user_agent=f"zsage/{__version__}")
+        data = catalog.fetch_catalog(timeout=120, user_agent=f"zsage/{__version__}")
         catalog.write_cache(str(BASE_DIR), data, time.time())
         return data, None
     except Exception as exc:
@@ -532,6 +532,7 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
 
     if not auto_mode:
         print(f"本地共 {len(models)} 个模型，正在拉取 models.dev 目录…")
+        print("（该站点时快时慢，慢的时候要几分钟；拉不动会自动改用本地缓存）")
     cat, notice = _catalog_with_cache()
     if cat is None:
         print(f"✗ {notice}", file=sys.stderr)

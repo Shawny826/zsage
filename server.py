@@ -313,11 +313,16 @@ def _load_catalog_from_disk():
 
 def _fetch_catalog_into_cache() -> None:
     last_error = None
-    for _attempt in range(2):  # 网络抖动很常见，重试一次
+    # 这个站点时快时慢（实测 6 秒到 12 分钟都有，还夹着 IncompleteRead），所以多试几次。
+    # 它在后台线程里跑，失败也有磁盘缓存顶着 —— 可以慢，但不能把接口拖住。
+    for attempt in range(3):
+        if attempt:
+            time.sleep(2.0 * attempt)
         try:
-            data = catalog.fetch_catalog(timeout=60, user_agent="zsage-dashboard")
+            data = catalog.fetch_catalog(timeout=120, user_agent="zsage-dashboard")
         except Exception as exc:
             last_error = exc
+            print(f"[catalog] 第 {attempt + 1} 次拉取失败：{exc}", file=sys.stderr)
             continue
         now = time.time()
         with CATALOG_LOCK:

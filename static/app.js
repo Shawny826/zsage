@@ -1103,7 +1103,7 @@ function renderIgnored() {
   };
 }
 
-async function loadModels({ retries = 6 } = {}) {
+async function loadModels({ retries = 24 } = {}) {
   el('st-status').textContent = '加载中…';
   try {
     state.models = await fetchJSON('/api/models');
@@ -1125,7 +1125,7 @@ async function loadModels({ retries = 6 } = {}) {
   } else if (c.loading && retries > 0) {
     // 首次拉取要 8~10 秒，稍后自己再来一次，别让首屏干等
     el('st-status').textContent = '正在拉取 models.dev 目录（首次约 10 秒）…';
-    setTimeout(() => { if (state.tab === 'settings') loadModels({ retries: retries - 1 }); }, 3000);
+    setTimeout(() => { if (state.tab === 'settings') loadModels({ retries: retries - 1 }); }, 5000);
   } else {
     el('st-status').textContent = c.error
       ? `models.dev 不可达，参考价暂缺：${c.error}`
@@ -1158,24 +1158,39 @@ function bindSettings() {
     renderModels();
   });
   el('st-match').onclick = async () => {
-    el('st-status').textContent = '正在重新拉取 models.dev 目录…';
+    // models.dev 时快时慢，慢的时候要几分钟，所以按"fetched_at 有没有变"判断成败，
+    // 而不是等固定时长后报超时 —— 拉不动时旧缓存还在用，得如实说出来。
+    const before = state.models?.catalog?.fetched_at || 0;
+    el('st-status').textContent = '正在后台重新拉取 models.dev 目录…';
     try {
       await postJSON('/api/models/match', {});
-      for (let i = 0; i < 24; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
-        const d = await fetchJSON('/api/models');
-        if (d.catalog && d.catalog.ready && !d.catalog.loading) {
-          state.models = d;
-          renderModels();
-          renderIgnored();
-          el('st-status').textContent = `目录已更新（${d.catalog.size} 个带报价的模型）`;
-          return;
-        }
-      }
-      el('st-status').textContent = '目录拉取超时，请稍后重试';
     } catch (e) {
-      el('st-status').textContent = '拉取失败：' + e.message;
+      el('st-status').textContent = '触发拉取失败：' + e.message;
+      return;
     }
+    const started = Date.now();
+    for (let i = 0; i < 72; i++) {          // 最多等 6 分钟
+      await new Promise((r) => setTimeout(r, 5000));
+      let d;
+      try { d = await fetchJSON('/api/models'); } catch (e) { continue; }
+      const c = d.catalog || {};
+      if (c.fetched_at && c.fetched_at !== before) {
+        state.models = d;
+        renderModels();
+        renderIgnored();
+        el('st-status').textContent = `目录已更新（${c.size} 个带报价的模型）`;
+        return;
+      }
+      if (!c.loading) {
+        el('st-status').textContent = c.error
+          ? `拉取失败：${c.error}　仍在使用 ${stAgeText(c.age_seconds)}前的缓存`
+          : '拉取结束但目录没有变化，稍后再试一次';
+        return;
+      }
+      el('st-status').textContent =
+        `正在后台拉取 models.dev 目录…已 ${Math.round((Date.now() - started) / 1000)} 秒（该站点可能很慢）`;
+    }
+    el('st-status').textContent = '等待超时，拉取可能仍在后台进行，稍后刷新页面看看';
   };
   el('st-check-matched').onclick = () => {
     el('st-table').querySelectorAll('tr[data-mid]').forEach((tr) => {

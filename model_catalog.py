@@ -15,6 +15,7 @@ zsage.py（CLI 的 sync-prices）和 server.py（设置页的「重新匹配」�
 from __future__ import annotations
 
 import difflib
+import gzip
 import json
 import os
 import re
@@ -49,17 +50,29 @@ def glob_safe(model_id: str) -> str:
     return model_id if any(ch in model_id for ch in "*?[") else f"*{model_id}*"
 
 
-def fetch_catalog(timeout: float = 30.0, user_agent: str = "zsage"):
+def fetch_catalog(timeout: float = 120.0, user_agent: str = "zsage"):
     """拉 models.dev 全量目录，返回 {归一化名: (provider_id, provider_name, model, rank)}。
 
     只收录带报价的模型 —— coding plan 一类的 provider 报价是空的，收进来没意义。
+
+    两点经验：目录未压缩有 4.6MB，而这个站点的响应时快时慢（实测 6 秒到 12 分钟都有，
+    还夹杂 IncompleteRead），所以① 主动要 gzip，传输量能降到 10%；② 超时给得宽松些，
+    慢但持续的下载不该被判死。拉不动就交给调用方用磁盘缓存兜底。
     """
-    req = urllib.request.Request(MODELS_DEV_URL, headers={"User-Agent": user_agent})
+    req = urllib.request.Request(
+        MODELS_DEV_URL,
+        headers={"User-Agent": user_agent, "Accept-Encoding": "gzip"},
+    )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+        encoding = (resp.headers.get("Content-Encoding") or "").lower()
+
+    if raw[:2] == b"\x1f\x8b" or "gzip" in encoding:
+        raw = gzip.decompress(raw)
+    raw_payload = json.loads(raw.decode("utf-8"))
 
     catalog: dict = {}
-    for pid, provider in raw.items():
+    for pid, provider in raw_payload.items():
         rank = 0 if pid in FIRST_PARTY_PROVIDERS else 1
         for model in (provider.get("models") or {}).values():
             cost = model.get("cost") or {}
