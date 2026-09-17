@@ -525,6 +525,10 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
                 return r
         return None
 
+    def alias_of(model_id: str) -> str:
+        entry = (config.get("models") or {}).get(model_id) or {}
+        return (entry.get("alias") or "").strip()
+
     models = [
         (mid, n) for mid, n in _zcode_model_ids(db)
         if not any(fnmatch.fnmatchcase(mid.lower(), p) for p in ignored)
@@ -552,7 +556,7 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
             already.append((mid, count, existing))
             continue
 
-        hit, how = catalog.match(mid, cat)
+        hit, how, used = catalog.match_with_alias(mid, alias_of(mid), cat)
         if hit is None:
             # 有旧规则就保留（这次没匹配上不代表要删），没有才算真的缺价
             (stale if existing is not None else unresolved).append((mid, count))
@@ -569,7 +573,9 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
             "cache_write": cost.get("cache_write"),
             "output": cost.get("output"),
             "source": "models.dev",
-            "note": f"models.dev {how}匹配：{pname} / {model.get('id')}（同步于 {today}）",
+            "note": (f"models.dev {how}匹配：{pname} / {model.get('id')}"
+                     + (f"（用别名 {used} 查询）" if used != mid else "")
+                     + f"（同步于 {today}）"),
         }
         if existing is not None:
             if all(existing.get(k) == entry[k] for k in ("input", "output", "cache_read", "cache_write")):

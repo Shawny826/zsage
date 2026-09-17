@@ -414,7 +414,7 @@ def is_model_enabled(model_id: str) -> bool:
     with CATALOG_LOCK:
         cat = CATALOG["data"]
     if cat:
-        hit, _how = catalog.match(model_id, cat)
+        hit, _how, _used = catalog.match_with_alias(model_id, PRICING.alias_for(model_id), cat)
         return hit is not None
     return False
 
@@ -1071,13 +1071,15 @@ class Handler(BaseHTTPRequestHandler):
 
             matched = entry.get("matched")
             if cat:  # 目录就绪时按最新目录重算，保证表格里的参考价是新的
-                hit, how = catalog.match(mid, cat)
+                hit, how, used = catalog.match_with_alias(mid, PRICING.alias_for(mid), cat)
                 if hit:
                     _pid, pname, model, _rank = hit
                     matched = {
                         "id": model.get("id"),
                         "provider": pname,
                         "how": how,
+                        "lookup": used,
+                        "via": "alias" if used != mid else "model_id",
                         "price": catalog.price_of(model),
                     }
                 else:
@@ -1174,11 +1176,15 @@ class Handler(BaseHTTPRequestHandler):
                             }
 
                     if cat:
-                        hit, how = catalog.match(mid, cat)
+                        hit, how, used = catalog.match_with_alias(
+                            mid, PRICING.alias_for(mid), cat
+                        )
                         if hit:
                             _pid, pname, model, _rank = hit
                             entry["matched"] = {
                                 "id": model.get("id"), "provider": pname, "how": how,
+                                "lookup": used,
+                                "via": "alias" if used != mid else "model_id",
                             }
                     models_cfg[mid] = entry
                 config["models"] = models_cfg

@@ -184,6 +184,9 @@ zsage setup-auto-sync --remove
 - **只处理你实际用到、且当前没有规则命中的模型**，不会把整个目录倒进 `prices.json`
 - 匹配分三级：模型名精确 → 一方包含另一方 → 模糊相似度（difflib ≥ 0.82）。
   第三级就是"未识别模型走近似匹配"：命中的 provider 与原始模型名会写进规则的 `note` 里，方便你核对
+- **查价用「别名优先、原名兜底」**：你在设置页填的别名（通常是官方名）会优先拿去查，
+  查不到再退回记录到的原名。记录名多是网关侧的变体（`claude-opus-5-kiro`、`GLM-5.3-1M`），
+  照原样查只能靠宽匹配。别名优先让这些变体直接精确命中
 - 同名模型被多家 provider 收录时**优先取官方**（anthropic / openai / google / zhipuai / deepseek…），
   避免拿到 AIHubMix、Vivgrid 这类转售商的价格
 - 标为 `official` / `assumed` 的规则是你手工核对的，**永不覆盖**；只有本命令自己生成的

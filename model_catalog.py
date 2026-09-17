@@ -110,6 +110,25 @@ def match(model_id: str, catalog: dict):
     return None, ""
 
 
+def match_with_alias(model_id: str, alias: str, catalog: dict):
+    """查价格：**别名优先，原名兜底**。返回 (命中项, 匹配方式, 实际用来查的名字)。
+
+    记录下来的名字常是网关侧的变体（claude-opus-5-kiro、kiro/claude-opus-5、
+    GLM-5.3-1M），照原样去查只能靠"包含"这种宽匹配，还可能落到第三方转售商身上。
+    别名是用户自己填的规范名，通常能精确命中，所以先拿它查；
+    别名查不到再退回原名，免得别名填了个目录里没有的名字就什么都匹配不上。
+    """
+    tried = []
+    for name in ((alias or "").strip(), (model_id or "").strip()):
+        if not name or name.lower() in tried:
+            continue
+        tried.append(name.lower())
+        hit, how = match(name, catalog)
+        if hit is not None:
+            return hit, how, name
+    return None, "", ""
+
+
 def price_of(model: dict) -> dict:
     """从目录条目里抽出 zsage 用的价格四元组（单位：每百万 token）。"""
     cost = model.get("cost") or {}

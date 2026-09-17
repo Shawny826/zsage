@@ -236,70 +236,196 @@
   "_last_sync": "2026-09-16T18:18:59",
   "models": {
     "glm-5.3-flash": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "glm-5.3-flash",
+        "provider": "Zhipu AI",
+        "how": "精确",
+        "lookup": "glm-5.3-flash",
+        "via": "model_id"
+      }
     },
     "GLM-5.3-Flash": {
       "alias": "glm-5.3-Flash",
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "glm-5.3-flash",
+        "provider": "Zhipu AI",
+        "how": "精确",
+        "lookup": "glm-5.3-Flash",
+        "via": "alias"
+      }
     },
     "deepseek-v4.1-flash": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "deepseek-v4.1-flash",
+        "provider": "GreenPT",
+        "how": "精确",
+        "lookup": "deepseek-v4.1-flash",
+        "via": "model_id"
+      }
     },
     "deepseek-v4-flash": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "deepseek-v4-flash",
+        "provider": "Azure",
+        "how": "精确",
+        "lookup": "deepseek-v4-flash",
+        "via": "model_id"
+      }
     },
     "glm-5.3": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "glm-5.3",
+        "provider": "Zhipu AI",
+        "how": "精确",
+        "lookup": "glm-5.3",
+        "via": "model_id"
+      }
     },
     "glm-5.2": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "glm-5.2",
+        "provider": "Alibaba",
+        "how": "精确",
+        "lookup": "glm-5.2",
+        "via": "model_id"
+      }
     },
     "GLM-5.3": {
       "alias": "glm-5.3",
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "glm-5.3",
+        "provider": "Zhipu AI",
+        "how": "精确",
+        "lookup": "glm-5.3",
+        "via": "alias"
+      }
     },
     "claude-opus-5-kiro": {
       "alias": "claude-opus-5",
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "claude-opus-5",
+        "provider": "Anthropic",
+        "how": "精确",
+        "lookup": "claude-opus-5",
+        "via": "alias"
+      }
     },
     "claude-opus-5": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "claude-opus-5",
+        "provider": "Anthropic",
+        "how": "精确",
+        "lookup": "claude-opus-5",
+        "via": "model_id"
+      }
     },
     "gpt-5.6-sol": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "gpt-5.6-sol",
+        "provider": "Azure",
+        "how": "精确",
+        "lookup": "gpt-5.6-sol",
+        "via": "model_id"
+      }
     },
     "kimi-k3": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "kimi-k3",
+        "provider": "Alibaba",
+        "how": "精确",
+        "lookup": "kimi-k3",
+        "via": "model_id"
+      }
     },
     "gemini-3.8-flash-high": {
       "alias": "gemini-3.8-flash",
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "gemini-3.8-flash",
+        "provider": "Vertex",
+        "how": "精确",
+        "lookup": "gemini-3.8-flash",
+        "via": "alias"
+      }
     },
     "gpt-5.5": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "gpt-5.5",
+        "provider": "Azure",
+        "how": "精确",
+        "lookup": "gpt-5.5",
+        "via": "model_id"
+      }
     },
     "grok-4.6": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "grok-4.6",
+        "provider": "xAI",
+        "how": "精确",
+        "lookup": "grok-4.6",
+        "via": "model_id"
+      }
     },
     "glm-5.1": {
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "glm-5.1",
+        "provider": "Zhipu AI",
+        "how": "精确",
+        "lookup": "glm-5.1",
+        "via": "model_id"
+      }
     },
     "ox-alpha-free": {
       "enabled": false
     },
     "GLM-5.3-1M": {
       "alias": "glm-5.3",
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "glm-5.3",
+        "provider": "Zhipu AI",
+        "how": "精确",
+        "lookup": "glm-5.3",
+        "via": "alias"
+      }
     },
     "omen-alpha": {
-      "enabled": false
+      "enabled": false,
+      "matched": {
+        "id": "omen-alpha",
+        "provider": "OpenCode Go",
+        "how": "精确",
+        "lookup": "omen-alpha",
+        "via": "model_id"
+      }
     },
     "test-dsf": {
       "enabled": false
     },
     "kiro/claude-opus-5": {
       "alias": "claude-opus-5",
-      "enabled": true
+      "enabled": true,
+      "matched": {
+        "id": "claude-opus-5",
+        "provider": "Anthropic",
+        "how": "精确",
+        "lookup": "claude-opus-5",
+        "via": "alias"
+      }
     }
   }
 }

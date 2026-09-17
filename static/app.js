@@ -937,9 +937,12 @@ function stModelsDevCell(m) {
   if (!md) return '<span class="muted">—</span>';
   const p = md.price || {};
   const money = (v) => (v === null || v === undefined ? '—' : v);
+  // 用别名查到的时候标出来，方便核对"别名是否就是官方名"
+  const via = md.via === 'alias' && md.lookup
+    ? `<span class="tag mut" title="用别名查询">查:${esc(md.lookup)}</span>` : '';
   return `<div class="md-cell">
     <div><code>${esc(md.id || '')}</code> <span class="muted">${esc(md.provider || '')}</span>
-      <span class="tag mut">${esc(md.how || '')}</span></div>
+      <span class="tag mut">${esc(md.how || '')}</span>${via}</div>
     <div class="muted">输入 ${money(p.input)} · 缓存读 ${money(p.cache_read)} · 缓存写 ${money(p.cache_write)} · 输出 ${money(p.output)}</div>
     <button class="st-adopt" data-mid="${esc(m.model_id)}">采用这组价格</button>
   </div>`;
