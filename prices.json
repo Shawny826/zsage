@@ -9,7 +9,11 @@
   ],
   "display_currency": "CNY",
   "usd_to_cny": 7.1,
-  "ignored_models": [],
+  "ignored_models": [
+    "test-dsf",
+    "omen-alpha",
+    "ox-alpha-free"
+  ],
   "unknown_model_price": {
     "enabled": false,
     "currency": "USD",
