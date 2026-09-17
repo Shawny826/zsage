@@ -12,7 +12,8 @@
   "ignored_models": [
     "test-dsf",
     "omen-alpha",
-    "ox-alpha-free"
+    "ox-alpha-free",
+    "gpt-5.5"
   ],
   "unknown_model_price": {
     "enabled": false,
