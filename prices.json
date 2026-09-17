@@ -229,5 +229,73 @@
       "note": "models.dev 精确匹配：OpenCode Go / omen-alpha（同步于 2026-09-16）"
     }
   ],
-  "_last_sync": "2026-09-16T18:18:59"
+  "_last_sync": "2026-09-16T18:18:59",
+  "models": {
+    "glm-5.3-flash": {
+      "enabled": true
+    },
+    "GLM-5.3-Flash": {
+      "alias": "glm-5.3-Flash",
+      "enabled": true
+    },
+    "deepseek-v4.1-flash": {
+      "enabled": true
+    },
+    "deepseek-v4-flash": {
+      "enabled": true
+    },
+    "glm-5.3": {
+      "enabled": true
+    },
+    "glm-5.2": {
+      "enabled": true
+    },
+    "GLM-5.3": {
+      "alias": "glm-5.3",
+      "enabled": true
+    },
+    "claude-opus-5-kiro": {
+      "alias": "claude-opus-5",
+      "enabled": true
+    },
+    "claude-opus-5": {
+      "enabled": true
+    },
+    "gpt-5.6-sol": {
+      "enabled": true
+    },
+    "kimi-k3": {
+      "enabled": true
+    },
+    "gemini-3.8-flash-high": {
+      "alias": "gemini-3.8-flash",
+      "enabled": true
+    },
+    "gpt-5.5": {
+      "enabled": true
+    },
+    "grok-4.6": {
+      "enabled": true
+    },
+    "glm-5.1": {
+      "enabled": true
+    },
+    "ox-alpha-free": {
+      "enabled": false
+    },
+    "GLM-5.3-1M": {
+      "alias": "glm-5.3",
+      "enabled": true
+    },
+    "omen-alpha": {
+      "enabled": false
+    },
+    "test-dsf": {
+      "enabled": false
+    },
+    "kiro/claude-opus-5": {
+      "alias": "claude-opus-5",
+      "enabled": true
+    }
+  }
 }
