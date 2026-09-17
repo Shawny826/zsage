@@ -349,7 +349,11 @@ function renderOverview() {
       ${k.unpriced_models.map(esc).join('、')}。<a href="#settings">去「设置」页</a>填价格，
       或取消勾选把它们排除在统计之外。</div>`);
   }
-  const assumed = (state.bootstrap?.models || []).filter((m) => m.pricing && m.pricing.source !== 'official');
+  // 只有"猜的"才提示：assumed 是仓库里按同族价估的，fallback 是 unknown_model_price 兜底。
+  // manual（你在设置页填/采用的）和 models.dev（同步来的）都不该再被称作估算。
+  const assumed = (state.bootstrap?.models || []).filter(
+    (m) => m.pricing && (m.pricing.source === 'assumed' || m.pricing.source === 'fallback')
+  );
   if (assumed.length) {
     // 分清两种情况：models.dev 上有官方价（可一键采用） vs 只能估算
     const hasOfficial = assumed.filter((m) => m.official_ref);

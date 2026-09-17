@@ -134,6 +134,10 @@ zsage restart -p 9000   # 重启并换到 9000
 
 ### 修复
 
+- **概览的估算提示会把自己填的价格也算进去**：判断条件是 `source !== 'official'`，
+  于是 `manual`（用户在设置页填或"采用"的价）和 `models.dev`（同步来的）都被当成估算值
+  提示出来 —— 但前者恰恰是用户核对过的。改为只提示 `assumed`（仓库按同族价估的）
+  与 `fallback`（`unknown_model_price` 兜底）。
 - **价格统一为美元**：此前规则里混着 USD 与 CNY（Kimi K3/K2 是人民币报价），展示币种是 CNY。
   现在把两条 CNY 规则按 `usd_to_cny` 折算成 USD（原始人民币报价保留在各自的 `note` 里，
   便于日后核对汇率或改回），并把 `display_currency` 设为 USD。16 条规则币种一致。
