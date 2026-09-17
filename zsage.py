@@ -454,9 +454,25 @@ def cmd_doctor() -> int:
 # --------------------------------------------------------------------------- #
 # 入口
 # --------------------------------------------------------------------------- #
-def _load_models_dev_catalog() -> dict:
-    """拉 models.dev 目录（实现在 model_catalog，server 侧也用同一份）。"""
-    return catalog.fetch_catalog(user_agent=f"zsage/{__version__}")
+def _catalog_with_cache():
+    """优先联网拉最新的；失败就退回磁盘缓存（server 拉过的也在同一文件里）。
+
+    返回 (目录, 说明)。目录为 None 表示既没网也没缓存。目录 4.6MB、拉一次 8~10 秒，
+    联网抖动很常见，所以不做"拉不到就报错"，而是尽量给出一份可用的价格表。
+    """
+    import time
+
+    try:
+        data = catalog.fetch_catalog(timeout=60, user_agent=f"zsage/{__version__}")
+        catalog.write_cache(str(BASE_DIR), data, time.time())
+        return data, None
+    except Exception as exc:
+        data, ts = catalog.read_cache(str(BASE_DIR))
+        if not data:
+            return None, f"联网失败且本地没有缓存：{exc}"
+        age = (time.time() - ts) if ts else 0
+        hours = age / 3600
+        return data, f"models.dev 暂时不可达（{exc}），改用 {hours:.1f} 小时前的本地缓存"
 
 
 def _zcode_model_ids(db_path: str):
@@ -516,16 +532,14 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
 
     if not auto_mode:
         print(f"本地共 {len(models)} 个模型，正在拉取 models.dev 目录…")
-    try:
-        cat = _load_models_dev_catalog()
-    except urllib.error.URLError as exc:
-        print(f"✗ 拉取 models.dev 失败（网络问题？）：{exc}", file=sys.stderr)
-        return 1
-    except Exception as exc:
-        print(f"✗ 解析 models.dev 失败：{exc}", file=sys.stderr)
+    cat, notice = _catalog_with_cache()
+    if cat is None:
+        print(f"✗ {notice}", file=sys.stderr)
         return 1
     if not auto_mode:
         print(f"models.dev 带报价的模型 {len(cat)} 个")
+        if notice:
+            print(f"  ⚠ {notice}")
 
     today = time.strftime("%Y-%m-%d")
     added, refreshed, unresolved, already, stale = [], [], [], [], []

@@ -237,3 +237,15 @@ table.st-table tr.st-off td:first-child { opacity: 1; }
 .md-cell .st-adopt { align-self: flex-start; padding: 2px 8px; font-size: 11.5px; margin-top: 3px; }
 .ignored-edit { display: flex; gap: 8px; align-items: center; }
 .ignored-edit input[type=text] { flex: 1; min-width: 280px; }
+.ignored-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 26px; margin-bottom: 10px; }
+.ignored-chips .chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: #eef1f5; border: 1px solid var(--line); border-radius: 999px;
+  padding: 2px 4px 2px 10px; font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.ignored-chips .chip button {
+  border: 0; background: transparent; cursor: pointer; color: var(--muted);
+  font-size: 14px; line-height: 1; padding: 0 5px; border-radius: 999px;
+}
+.ignored-chips .chip button:hover { background: #fee4e2; color: var(--err); }

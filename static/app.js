@@ -108,6 +108,7 @@ const state = {
   models: null,
   modelEdits: {},
   stFilter: '',
+  ignoredDraft: null,
   page: 1,
   size: 100,
   drawerId: null,
@@ -343,12 +344,15 @@ function renderOverview() {
   const notices = [];
   if (k.unpriced_requests) {
     notices.push(`<div class="notice">有 ${fmtInt(k.unpriced_requests)} 条请求（${fmtTok(k.unpriced_tokens)} token）没有匹配到单价，未计入费用：
-      ${k.unpriced_models.map(esc).join('、')}。到 <code>prices.json</code> 里加一条规则即可。</div>`);
+      ${k.unpriced_models.map(esc).join('、')}。<a href="#settings">去「设置」页</a>填价格，
+      或取消勾选把它们排除在统计之外。</div>`);
   }
   const assumed = (state.bootstrap?.models || []).filter((m) => m.pricing && m.pricing.source !== 'official');
   if (assumed.length) {
-    notices.push(`<div class="notice info">以下模型的单价是估算值（官方价目页取不到），请核对后改 <code>prices.json</code>：
-      ${assumed.map((m) => esc(m.model_id)).join('、')}</div>`);
+    const names = [...new Set(assumed.map((m) => m.pricing.label || m.model_id))];
+    notices.push(`<div class="notice info">以下 ${names.length} 个模型的单价是估算值（没取到官方价目）：
+      ${names.map(esc).join('、')}。<a href="#settings">去「设置」页核对</a> ——
+      那里能一键采用 models.dev 的官方价。</div>`);
   }
   el('ov-notice').innerHTML = notices.join('');
   renderPriceConfig();
@@ -1028,27 +1032,71 @@ function renderModels() {
   });
 }
 
-const ST_IGNORED_HINT = '支持 * 通配、大小写不敏感。修改保存后会立即从所有统计中剔除。';
+function stAgeText(seconds) {
+  if (seconds == null) return '';
+  if (seconds < 90) return '刚刚';
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} 小时`;
+  return `${Math.round(seconds / 86400)} 天`;
+}
 
+/** 忽略列表：已选项做成可删的 chip，新增项从下拉里挑（也允许直接敲通配符） */
 function renderIgnored() {
-  const pats = (state.bootstrap?.pricing?.ignored_models) || [];
+  const pats = state.ignoredDraft || [];
+  const allModels = (state.models?.models || []).map((m) => m.model_id);
+  const taken = new Set(pats.map((p) => p.toLowerCase()));
+  const options = allModels
+    .filter((m) => !taken.has(m.toLowerCase()))
+    .map((m) => `<option value="${esc(m)}"></option>`).join('');
+
+  const chips = pats.length
+    ? pats.map((p, i) => `<span class="chip">${esc(p)}<button data-i="${i}" title="移除">×</button></span>`).join('')
+    : '<span class="muted">还没有忽略任何模型</span>';
+
   el('st-ignored').innerHTML = `
+    <div class="ignored-chips" id="st-ignored-chips">${chips}</div>
     <div class="ignored-edit">
-      <input type="text" id="st-ignored-input" value="${esc(pats.join(', '))}"
-        placeholder="例如 *test*, *debug*">
-      <button id="st-ignored-save">保存忽略列表</button>
+      <input type="text" id="st-ignored-input" list="st-ignored-list" autocomplete="off"
+        placeholder="从下拉里选一个已记录的模型，或直接输入通配符（如 *test*）">
+      <datalist id="st-ignored-list">${options}</datalist>
+      <button id="st-ignored-add">添加</button>
+      <button id="st-ignored-save" class="primary">保存忽略列表</button>
     </div>
-    <p class="muted st-note">${ST_IGNORED_HINT} 当前 ${pats.length} 条。</p>`;
+    <p class="muted st-note">
+      支持 <code>*</code> 通配、大小写不敏感，命中的模型<b>完全不出现在看板里</b>（含筛选下拉与导出），
+      比在表格里取消勾选更彻底。共 ${pats.length} 条。
+    </p>`;
+
+  const input = el('st-ignored-input');
+  const add = () => {
+    const v = (input.value || '').trim();
+    if (!v) return;
+    if (!pats.some((p) => p.toLowerCase() === v.toLowerCase())) pats.push(v);
+    input.value = '';
+    renderIgnored();
+    el('st-ignored-input')?.focus();
+  };
+  el('st-ignored-add').onclick = add;
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  // datalist 选中后多数浏览器不触发 change，这里补一个 input 事件兜底
+  input.addEventListener('change', () => { if (input.value.trim()) add(); });
+
+  el('st-ignored-chips').querySelectorAll('button[data-i]').forEach((btn) => {
+    btn.onclick = () => {
+      pats.splice(Number(btn.dataset.i), 1);
+      renderIgnored();
+    };
+  });
+
   el('st-ignored-save').onclick = async () => {
-    const raw = el('st-ignored-input').value || '';
-    const next = raw.split(',').map((s) => s.trim()).filter(Boolean);
     el('st-status').textContent = '保存中…';
     try {
-      // 只提交这一个字段：/api/prices 的 GET 是裁剪视图，整体回写会丢 peak/defaults
-      await postJSON('/api/models', { ignored_models: next });
+      // 只提交这一个字段：GET /api/prices 是裁剪视图，整体回写会丢 peak / defaults
+      await postJSON('/api/models', { ignored_models: pats });
       state.bootstrap = await fetchJSON('/api/bootstrap');
-      el('st-status').textContent = `忽略列表已保存（${next.length} 条）`;
-      loadModels();
+      await refresh();
+      renderIgnored();
+      el('st-status').textContent = `忽略列表已保存（${pats.length} 条）`;
     } catch (e) {
       el('st-status').textContent = '保存失败：' + e.message;
     }
@@ -1063,17 +1111,25 @@ async function loadModels({ retries = 6 } = {}) {
     el('st-status').textContent = '加载失败：' + e.message;
     return;
   }
+  if (state.ignoredDraft === null) {
+    state.ignoredDraft = [...((state.bootstrap?.pricing?.ignored_models) || [])];
+  }
   renderModels();
   renderIgnored();
   const c = state.models.catalog || {};
   if (c.ready) {
-    el('st-status').textContent = '已就绪';
-  } else if (retries > 0) {
-    // 目录在后台拉取，稍后自己再来一次，别让首屏干等 4MB
-    el('st-status').textContent = '正在拉取 models.dev 目录…';
-    setTimeout(() => { if (state.tab === 'settings') loadModels({ retries: retries - 1 }); }, 2500);
+    // 有数据就用，哪怕是旧缓存 —— 网络不通不该让参考价整体消失
+    el('st-status').textContent = c.error
+      ? `参考价取自 ${stAgeText(c.age_seconds)}前的缓存（models.dev 暂时不可达）`
+      : (c.stale ? `参考价取自 ${stAgeText(c.age_seconds)}前的缓存，正在后台更新` : '已就绪');
+  } else if (c.loading && retries > 0) {
+    // 首次拉取要 8~10 秒，稍后自己再来一次，别让首屏干等
+    el('st-status').textContent = '正在拉取 models.dev 目录（首次约 10 秒）…';
+    setTimeout(() => { if (state.tab === 'settings') loadModels({ retries: retries - 1 }); }, 3000);
   } else {
-    el('st-status').textContent = c.error ? ('目录拉取失败：' + c.error) : '目录未就绪，可点「重新匹配」';
+    el('st-status').textContent = c.error
+      ? `models.dev 不可达，参考价暂缺：${c.error}`
+      : '目录未就绪，可点「重新匹配」';
   }
 }
 
@@ -1111,6 +1167,7 @@ function bindSettings() {
         if (d.catalog && d.catalog.ready && !d.catalog.loading) {
           state.models = d;
           renderModels();
+          renderIgnored();
           el('st-status').textContent = `目录已更新（${d.catalog.size} 个带报价的模型）`;
           return;
         }

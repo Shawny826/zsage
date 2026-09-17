@@ -294,33 +294,57 @@ PRICING = Pricing(PRICES_PATH)
 # --------------------------------------------------------------------------- #
 # models.dev 目录缓存
 #
-# 目录有 4.6MB，设置页每次打开都去拉不现实，所以缓存起来（TTL 内复用）。
-# 冷启动时丢后台线程去拉，接口先返回现状，前端稍后重试一次即可 —— 不让首屏干等。
+# 目录有 4.6MB、拉一次要 8~10 秒，所以除了内存缓存还落盘一份：
+# 重启后立刻可用；网络不通时用旧数据顶着，不至于让设置页干脆没有参考价。
 # --------------------------------------------------------------------------- #
 CATALOG_TTL = 6 * 3600
 CATALOG = {"ts": 0.0, "data": None, "loading": False, "error": None}
 CATALOG_LOCK = threading.Lock()
+CATALOG_CACHE_PATH = catalog.cache_file(BASE_DIR)
+
+
+def _save_catalog_to_disk(data: dict, ts: float) -> None:
+    catalog.write_cache(BASE_DIR, data, ts)
+
+
+def _load_catalog_from_disk():
+    return catalog.read_cache(BASE_DIR)
 
 
 def _fetch_catalog_into_cache() -> None:
-    try:
-        data = catalog.fetch_catalog(user_agent="zsage-dashboard")
+    last_error = None
+    for _attempt in range(2):  # 网络抖动很常见，重试一次
+        try:
+            data = catalog.fetch_catalog(timeout=60, user_agent="zsage-dashboard")
+        except Exception as exc:
+            last_error = exc
+            continue
+        now = time.time()
         with CATALOG_LOCK:
-            CATALOG.update(data=data, ts=time.time(), error=None)
-        print(f"[catalog] models.dev 目录已缓存：{len(data)} 个带报价的模型")
-    except Exception as exc:
-        with CATALOG_LOCK:
-            CATALOG["error"] = str(exc)
-        print(f"[catalog] 拉取 models.dev 失败：{exc}", file=sys.stderr)
-    finally:
-        with CATALOG_LOCK:
-            CATALOG["loading"] = False
+            CATALOG.update(data=data, ts=now, error=None, loading=False)
+        _save_catalog_to_disk(data, now)
+        print(f"[catalog] models.dev 目录已更新：{len(data)} 个带报价的模型")
+        return
+
+    with CATALOG_LOCK:
+        CATALOG["error"] = f"{type(last_error).__name__}: {last_error}"
+        CATALOG["loading"] = False
+    print(f"[catalog] 拉取 models.dev 失败，沿用已有缓存：{last_error}", file=sys.stderr)
 
 
 def ensure_catalog(force: bool = False) -> None:
-    """确保目录可用。不阻塞：需要拉取时丢后台线程，调用方先用手上的数据。"""
-    now = time.time()
+    """确保目录可用。不阻塞：需要联网时丢后台线程，调用方先用手上的数据。
+
+    手上没数据时先读磁盘缓存 —— 首次访问就有参考价，不必干等 10 秒。
+    """
     with CATALOG_LOCK:
+        if CATALOG["data"] is None:
+            disk_data, disk_ts = _load_catalog_from_disk()
+            if disk_data:
+                CATALOG.update(data=disk_data, ts=disk_ts)
+                print(f"[catalog] 已从磁盘缓存载入 {len(disk_data)} 个模型报价")
+
+        now = time.time()
         if CATALOG["loading"]:
             return
         if not force and CATALOG["data"] is not None and (now - CATALOG["ts"]) < CATALOG_TTL:
@@ -331,10 +355,14 @@ def ensure_catalog(force: bool = False) -> None:
 
 def catalog_state() -> dict:
     with CATALOG_LOCK:
+        ts = CATALOG["ts"]
+        age = (time.time() - ts) if ts else None
         return {
             "ready": CATALOG["data"] is not None,
             "loading": CATALOG["loading"],
-            "fetched_at": int(CATALOG["ts"] * 1000) if CATALOG["ts"] else None,
+            "fetched_at": int(ts * 1000) if ts else None,
+            "age_seconds": int(age) if age is not None else None,
+            "stale": bool(age is not None and age > CATALOG_TTL),
             "error": CATALOG["error"],
             "size": len(CATALOG["data"]) if CATALOG["data"] else 0,
         }

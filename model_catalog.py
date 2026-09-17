@@ -16,10 +16,15 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
 import re
 import urllib.request
 
 MODELS_DEV_URL = "https://models.dev/api.json"
+
+# 目录 4.6MB、拉一次 8~10 秒，落盘缓存让重启与断网都不至于没有参考价。
+# server 与 CLI 共用同一个文件（放在仓库根目录，已被 .gitignore 排除）。
+CACHE_FILENAME = "models_dev_cache.json"
 
 # 归一化名冲突时优先取这些官方 provider
 FIRST_PARTY_PROVIDERS = {
@@ -102,3 +107,26 @@ def price_of(model: dict) -> dict:
         "cache_write": cost.get("cache_write"),
         "output": cost.get("output"),
     }
+
+
+def cache_file(base_dir: str) -> str:
+    return os.path.join(base_dir, CACHE_FILENAME)
+
+
+def read_cache(base_dir: str):
+    """读磁盘缓存。返回 (catalog, fetched_at)；没有或坏了就 (None, 0.0)。"""
+    try:
+        with open(cache_file(base_dir), encoding="utf-8") as fh:
+            payload = json.load(fh)
+        data = payload.get("catalog") or {}
+        return (data if data else None), float(payload.get("fetched_at") or 0)
+    except (OSError, ValueError):
+        return None, 0.0
+
+
+def write_cache(base_dir: str, data: dict, ts: float) -> None:
+    try:
+        with open(cache_file(base_dir), "w", encoding="utf-8") as fh:
+            json.dump({"fetched_at": ts, "catalog": data}, fh)
+    except OSError:
+        pass
