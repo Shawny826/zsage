@@ -349,10 +349,21 @@ function renderOverview() {
   }
   const assumed = (state.bootstrap?.models || []).filter((m) => m.pricing && m.pricing.source !== 'official');
   if (assumed.length) {
-    const names = [...new Set(assumed.map((m) => m.pricing.label || m.model_id))];
-    notices.push(`<div class="notice info">以下 ${names.length} 个模型的单价是估算值（没取到官方价目）：
-      ${names.map(esc).join('、')}。<a href="#settings">去「设置」页核对</a> ——
-      那里能一键采用 models.dev 的官方价。</div>`);
+    // 分清两种情况：models.dev 上有官方价（可一键采用） vs 只能估算
+    const hasOfficial = assumed.filter((m) => m.official_ref);
+    const onlyGuess = assumed.filter((m) => !m.official_ref);
+    const names = (list) => [...new Set(list.map((m) => m.pricing.label || m.model_id))];
+    if (hasOfficial.length) {
+      const ns = names(hasOfficial);
+      notices.push(`<div class="notice info">以下 ${ns.length} 个模型当前用的是 <b>prices.json 里的估算价</b>，
+        而 models.dev 上有对应价格：${ns.map(esc).join('、')}。<a href="#settings">去「设置」页</a>
+        点每行的「采用这组价格」即可换过去（参考列会同时显示两组价格与来源 provider，便于判断是否值得采用）。</div>`);
+    }
+    if (onlyGuess.length) {
+      const ns = names(onlyGuess);
+      notices.push(`<div class="notice info">以下 ${ns.length} 个模型的单价是估算值，models.dev 里也没有对应条目：
+        ${ns.map(esc).join('、')}。<a href="#settings">去「设置」页</a>手工填写更准的价格。</div>`);
+    }
   }
   el('ov-notice').innerHTML = notices.join('');
   renderPriceConfig();
@@ -932,6 +943,31 @@ function stIsMatched(m) {
   return !!(m.price || m.models_dev) && m.source !== 'unmatched';
 }
 
+/** models.dev 参考价 / 当前价 的倍数（以输入价为准，缺了退到输出价）。
+ *  必须先把币种统一 —— 规则里有用 CNY 的（如 kimi-k3），直接按数字比会得出荒谬的比值。 */
+function stRatio(cur, off) {
+  if (!cur || !off) return null;
+  const rate = state.bootstrap?.pricing?.usd_to_cny || 7.1;
+  const toUsd = (v, c) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return NaN;
+    return (c || 'USD') === 'CNY' ? n / rate : n;
+  };
+  for (const k of ['input', 'output']) {
+    const a = toUsd(cur[k], cur.currency);
+    const b = toUsd(off[k], off.currency);
+    if (a > 0 && b > 0) return b / a;
+  }
+  return null;
+}
+
+function stDeltaTag(m) {
+  const r = stRatio(m.price, m.models_dev && m.models_dev.price);
+  if (r == null || Math.abs(r - 1) <= 0.05) return '';
+  const txt = `参考价 ${r.toFixed(2)}×`;
+  return `<span class="tag ${r < 1 ? 'ok' : 'est'}" title="models.dev 参考价 / 当前价（已按汇率统一币种）">${txt}</span>`;
+}
+
 function stModelsDevCell(m) {
   const md = m.models_dev;
   if (!md) return '<span class="muted">—</span>';
@@ -942,7 +978,7 @@ function stModelsDevCell(m) {
     ? `<span class="tag mut" title="用别名查询">查:${esc(md.lookup)}</span>` : '';
   return `<div class="md-cell">
     <div><code>${esc(md.id || '')}</code> <span class="muted">${esc(md.provider || '')}</span>
-      <span class="tag mut">${esc(md.how || '')}</span>${via}</div>
+      <span class="tag mut">${esc(md.how || '')}</span>${via}${stDeltaTag(m)}</div>
     <div class="muted">输入 ${money(p.input)} · 缓存读 ${money(p.cache_read)} · 缓存写 ${money(p.cache_write)} · 输出 ${money(p.output)}</div>
     <button class="st-adopt" data-mid="${esc(m.model_id)}">采用这组价格</button>
   </div>`;

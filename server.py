@@ -998,15 +998,32 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             con.close()
 
+        with CATALOG_LOCK:
+            cat = CATALOG["data"]
+
         models = []
         for model_id, entries in groups.items():
             rule = PRICING.rule_for(model_id)
+            # 顺带给出 models.dev 上的官方价，让前端能提示"当前是估算价，官方价可一键采用"
+            official = None
+            if cat:
+                hit, how, used = catalog.match_with_alias(
+                    model_id, PRICING.alias_for(model_id), cat
+                )
+                if hit:
+                    _pid, pname, model, _rank = hit
+                    official = {
+                        "id": model.get("id"), "provider": pname, "how": how,
+                        "lookup": used,
+                        "price": catalog.price_of(model),
+                    }
             models.append(
                 {
                     "model_id": model_id,
                     "requests": sum(e["requests"] for e in entries),
                     "providers": [e["provider_id"] for e in entries],
                     "last_ts": max(e["last_ts"] or 0 for e in entries),
+                    "official_ref": official,
                     "pricing": None if rule is None else {
                         "label": rule.get("label") or rule.get("match"),
                         "currency": rule.get("currency", "USD"),
