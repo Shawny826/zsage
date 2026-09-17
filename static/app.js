@@ -105,6 +105,9 @@ const state = {
   eventSort: { key: 'started_at', order: 'desc' },
   modelSort: { key: 'cost', order: 'desc' },
   facetSig: null,
+  models: null,
+  modelEdits: {},
+  stFilter: '',
   page: 1,
   size: 100,
   drawerId: null,
@@ -798,7 +801,7 @@ function restoreScroll(saved) {
   });
 }
 
-const TABS = ['overview', 'analytics', 'events'];
+const TABS = ['overview', 'analytics', 'events', 'settings'];
 
 function openTab(tab, { updateHash = true } = {}) {
   if (!TABS.includes(tab)) tab = 'overview';
@@ -808,6 +811,7 @@ function openTab(tab, { updateHash = true } = {}) {
   if (updateHash && location.hash.slice(1) !== tab) history.replaceState(null, '', '#' + tab);
   // 切回来立刻用已有数据渲染，别让用户对着空卡片等下一次自动刷新
   if (tab === 'events') loadEvents();
+  else if (tab === 'settings') loadModels();
   else if (state.summary) (tab === 'overview' ? renderOverview : renderAnalytics)();
 }
 
@@ -845,7 +849,8 @@ async function refresh({ reloadBootstrap = false } = {}) {
 
     // 自动刷新时别把已经滚到一半的表格弹回顶部
     const scroll = captureScroll();
-    if (state.tab === 'overview') renderOverview();
+    if (state.tab === 'settings') { /* 不动：避免覆盖未保存的编辑 */ }
+    else if (state.tab === 'overview') renderOverview();
     else if (state.tab === 'analytics') renderAnalytics();
     else await loadEvents();
     restoreScroll(scroll);
@@ -854,6 +859,281 @@ async function refresh({ reloadBootstrap = false } = {}) {
     el('ov-notice').innerHTML = `<div class="notice">连不上本地服务，可能已经自动退出（标签关闭后服务会自己停）。
       重新打开：输入 <code>/usage</code>。原始错误：${esc(e.message)}</div>`;
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * 渲染：设置（逐模型的勾选 / 别名 / 价格）
+ *
+ * 表格本身就是编辑态：保存时直接读 DOM，不额外维护一份可失同步的状态。
+ * 只有筛选导致重绘时，才先把当前输入收进 state.modelEdits 以免丢失。
+ * ------------------------------------------------------------------ */
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+/** 把表格里当前的输入收成一份 {model_id: {...}}，用于重绘前暂存或提交 */
+function collectModelRows() {
+  const out = {};
+  document.querySelectorAll('#st-table tr[data-mid]').forEach((tr) => {
+    const mid = tr.dataset.mid;
+    const num = (k) => {
+      const node = tr.querySelector(`.st-num[data-k="${k}"]`);
+      const v = node ? node.value.trim() : '';
+      return v === '' ? null : Number(v);
+    };
+    out[mid] = {
+      alias: (tr.querySelector('.st-alias')?.value || '').trim(),
+      enabled: !!tr.querySelector('.st-on')?.checked,
+      price: {
+        currency: tr.querySelector('.st-cur')?.value || 'USD',
+        input: num('input'),
+        cache_read: num('cache_read'),
+        cache_write: num('cache_write'),
+        output: num('output'),
+      },
+    };
+  });
+  return out;
+}
+
+function stashModelEdits() {
+  if (!el('st-table')?.querySelector('tr[data-mid]')) return;
+  Object.assign(state.modelEdits, collectModelRows());
+}
+
+function stNum(v) {
+  return v === null || v === undefined ? '' : String(v);
+}
+
+function stSourceTag(m) {
+  if (m.ignored) return '<span class="tag err">已忽略</span>';
+  if (m.source === 'manual') return '<span class="tag ok">手填</span>';
+  if (m.source === 'unmatched') return '<span class="tag warn">未匹配</span>';
+  const src = m.source.startsWith('rule:') ? m.source.slice(5) : m.source;
+  const cls = src === 'official' ? 'ok' : (src === 'models.dev' ? 'mut' : 'est');
+  return `<span class="tag ${cls}">规则·${esc(src)}</span>`;
+}
+
+/** 有没有可用价格（来自规则或 models.dev）。目录未就绪时不能拿 models_dev 当判据，
+ *  否则「取消未匹配」会把所有行一起取消。 */
+function stIsMatched(m) {
+  if (!m) return false;
+  return !!(m.price || m.models_dev) && m.source !== 'unmatched';
+}
+
+function stModelsDevCell(m) {
+  const md = m.models_dev;
+  if (!md) return '<span class="muted">—</span>';
+  const p = md.price || {};
+  const money = (v) => (v === null || v === undefined ? '—' : v);
+  return `<div class="md-cell">
+    <div><code>${esc(md.id || '')}</code> <span class="muted">${esc(md.provider || '')}</span>
+      <span class="tag mut">${esc(md.how || '')}</span></div>
+    <div class="muted">输入 ${money(p.input)} · 缓存读 ${money(p.cache_read)} · 缓存写 ${money(p.cache_write)} · 输出 ${money(p.output)}</div>
+    <button class="st-adopt" data-mid="${esc(m.model_id)}">采用这组价格</button>
+  </div>`;
+}
+
+function renderModels() {
+  const data = state.models;
+  if (!data) return;
+  const q = (state.stFilter || '').trim().toLowerCase();
+  const all = data.models || [];
+  const rows = all.filter((m) => {
+    if (!q) return true;
+    const md = m.models_dev || {};
+    return [m.model_id, m.alias, md.id, md.provider]
+      .filter(Boolean).join(' ').toLowerCase().includes(q);
+  });
+
+  const s = data.summary || {};
+  el('st-hint').textContent =
+    `勾选的模型才计入统计 · 共 ${s.total} 个，已选 ${s.enabled}，未匹配 ${s.unmatched} · 改完点保存`;
+  el('st-note').innerHTML =
+    '别名留空则用记录到的原始模型名。<b>多个模型填同一个别名会被合并成一行</b>'
+    + '（例如 <code>glm-5.3-flash</code> 与 <code>GLM-5.3-Flash</code>）。'
+    + '价格与规则表中的值一致时不会写进配置，该行继续跟随 <code>prices.json</code> 的规则；'
+    + '改过才会钉成手动价。';
+
+  const body = rows.map((m) => {
+    const e = state.modelEdits[m.model_id] || {};
+    const alias = e.alias !== undefined ? e.alias : (m.alias || '');
+    const enabled = e.enabled !== undefined ? e.enabled : m.enabled;
+    const price = e.price || m.price || {};
+    const cur = price.currency || 'USD';
+    const prov = (m.providers || []).join(', ');
+    return `<tr data-mid="${esc(m.model_id)}" class="${enabled ? '' : 'st-off'}">
+      <td><input type="checkbox" class="st-on" ${enabled ? 'checked' : ''}
+        ${m.ignored ? 'disabled title="在 ignored_models 里，需先从忽略列表移除"' : ''}></td>
+      <td class="l"><code>${esc(m.model_id)}</code>
+        ${m.ignored ? '<span class="tag err">忽略中</span>' : ''}
+        <div class="muted st-sub">${esc(prov)}</div></td>
+      <td><input class="st-alias" value="${esc(alias)}"
+        placeholder="${esc((m.models_dev && m.models_dev.id) || '别名')}"></td>
+      <td><input class="st-num" data-k="input" value="${stNum(price.input)}"></td>
+      <td><input class="st-num" data-k="cache_read" value="${stNum(price.cache_read)}"></td>
+      <td><input class="st-num" data-k="cache_write" value="${stNum(price.cache_write)}"></td>
+      <td><input class="st-num" data-k="output" value="${stNum(price.output)}"></td>
+      <td><select class="st-cur">
+        <option value="USD"${cur === 'USD' ? ' selected' : ''}>USD</option>
+        <option value="CNY"${cur === 'CNY' ? ' selected' : ''}>CNY</option>
+      </select></td>
+      <td class="l">${stSourceTag(m)}
+        <div class="muted st-sub">${esc(m.rule_match || '')}</div></td>
+      <td class="num">${fmtInt(m.requests)}</td>
+      <td class="l">${stModelsDevCell(m)}</td>
+    </tr>`;
+  }).join('');
+
+  el('st-table').innerHTML = `<div class="table-wrap"><table class="data st-table">
+    <thead><tr>
+      <th>启用</th><th class="l">记录的模型名</th><th class="l">别名</th>
+      <th>输入</th><th>缓存读</th><th>缓存写</th><th>输出</th><th>币种</th>
+      <th class="l">价格来源</th><th>请求</th><th class="l">models.dev 参考（每百万 token）</th>
+    </tr></thead>
+    <tbody>${body || '<tr><td colspan="11"><div class="empty">没有匹配的模型</div></td></tr>'}</tbody>
+  </table></div>`;
+
+  el('st-table').querySelectorAll('.st-adopt').forEach((btn) => {
+    btn.onclick = () => {
+      const mid = btn.dataset.mid;
+      const m = all.find((x) => x.model_id === mid);
+      if (!m || !m.models_dev) return;
+      const tr = [...el('st-table').querySelectorAll('tr[data-mid]')]
+        .find((r) => r.dataset.mid === mid);
+      if (!tr) return;
+      const p = m.models_dev.price || {};
+      ['input', 'cache_read', 'cache_write', 'output'].forEach((k) => {
+        const node = tr.querySelector(`.st-num[data-k="${k}"]`);
+        if (node) node.value = p[k] === null || p[k] === undefined ? '' : p[k];
+      });
+      const cur = tr.querySelector('.st-cur');
+      if (cur) cur.value = p.currency || 'USD';
+      el('st-status').textContent = '已填入 models.dev 价格，记得保存';
+    };
+  });
+
+  el('st-table').querySelectorAll('.st-on').forEach((cb) => {
+    cb.onchange = () => {
+      const tr = cb.closest('tr');
+      tr.classList.toggle('st-off', !cb.checked);
+    };
+  });
+}
+
+const ST_IGNORED_HINT = '支持 * 通配、大小写不敏感。修改保存后会立即从所有统计中剔除。';
+
+function renderIgnored() {
+  const pats = (state.bootstrap?.pricing?.ignored_models) || [];
+  el('st-ignored').innerHTML = `
+    <div class="ignored-edit">
+      <input type="text" id="st-ignored-input" value="${esc(pats.join(', '))}"
+        placeholder="例如 *test*, *debug*">
+      <button id="st-ignored-save">保存忽略列表</button>
+    </div>
+    <p class="muted st-note">${ST_IGNORED_HINT} 当前 ${pats.length} 条。</p>`;
+  el('st-ignored-save').onclick = async () => {
+    const raw = el('st-ignored-input').value || '';
+    const next = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    el('st-status').textContent = '保存中…';
+    try {
+      // 只提交这一个字段：/api/prices 的 GET 是裁剪视图，整体回写会丢 peak/defaults
+      await postJSON('/api/models', { ignored_models: next });
+      state.bootstrap = await fetchJSON('/api/bootstrap');
+      el('st-status').textContent = `忽略列表已保存（${next.length} 条）`;
+      loadModels();
+    } catch (e) {
+      el('st-status').textContent = '保存失败：' + e.message;
+    }
+  };
+}
+
+async function loadModels({ retries = 6 } = {}) {
+  el('st-status').textContent = '加载中…';
+  try {
+    state.models = await fetchJSON('/api/models');
+  } catch (e) {
+    el('st-status').textContent = '加载失败：' + e.message;
+    return;
+  }
+  renderModels();
+  renderIgnored();
+  const c = state.models.catalog || {};
+  if (c.ready) {
+    el('st-status').textContent = '已就绪';
+  } else if (retries > 0) {
+    // 目录在后台拉取，稍后自己再来一次，别让首屏干等 4MB
+    el('st-status').textContent = '正在拉取 models.dev 目录…';
+    setTimeout(() => { if (state.tab === 'settings') loadModels({ retries: retries - 1 }); }, 2500);
+  } else {
+    el('st-status').textContent = c.error ? ('目录拉取失败：' + c.error) : '目录未就绪，可点「重新匹配」';
+  }
+}
+
+async function saveModels() {
+  const rows = collectModelRows();
+  const count = Object.keys(rows).length;
+  if (!count) { el('st-status').textContent = '没有可保存的行'; return; }
+  el('st-status').textContent = `保存 ${count} 行…`;
+  try {
+    await postJSON('/api/models', { models: rows });
+    state.modelEdits = {};
+    state.bootstrap = await fetchJSON('/api/bootstrap');  // 名字/价格都变了，重取
+    await refresh({ reloadBootstrap: false });
+    await loadModels();
+    el('st-status').textContent = `已保存 ${count} 行，统计已按新的勾选重算`;
+  } catch (e) {
+    el('st-status').textContent = '保存失败：' + e.message;
+  }
+}
+
+function bindSettings() {
+  el('st-save').onclick = saveModels;
+  el('st-filter').addEventListener('input', () => {
+    stashModelEdits();          // 重绘前先把输入收好，免得筛选把它们冲掉
+    state.stFilter = el('st-filter').value;
+    renderModels();
+  });
+  el('st-match').onclick = async () => {
+    el('st-status').textContent = '正在重新拉取 models.dev 目录…';
+    try {
+      await postJSON('/api/models/match', {});
+      for (let i = 0; i < 24; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const d = await fetchJSON('/api/models');
+        if (d.catalog && d.catalog.ready && !d.catalog.loading) {
+          state.models = d;
+          renderModels();
+          el('st-status').textContent = `目录已更新（${d.catalog.size} 个带报价的模型）`;
+          return;
+        }
+      }
+      el('st-status').textContent = '目录拉取超时，请稍后重试';
+    } catch (e) {
+      el('st-status').textContent = '拉取失败：' + e.message;
+    }
+  };
+  el('st-check-matched').onclick = () => {
+    el('st-table').querySelectorAll('tr[data-mid]').forEach((tr) => {
+      const row = (state.models?.models || []).find((m) => m.model_id === tr.dataset.mid);
+      const cb = tr.querySelector('.st-on');
+      if (cb && !cb.disabled && stIsMatched(row)) { cb.checked = true; tr.classList.remove('st-off'); }
+    });
+  };
+  el('st-uncheck-unmatched').onclick = () => {
+    el('st-table').querySelectorAll('tr[data-mid]').forEach((tr) => {
+      const row = (state.models?.models || []).find((m) => m.model_id === tr.dataset.mid);
+      const cb = tr.querySelector('.st-on');
+      if (cb && !cb.disabled && row && !stIsMatched(row)) { cb.checked = false; tr.classList.add('st-off'); }
+    });
+  };
 }
 
 function init() {
@@ -888,6 +1168,7 @@ function init() {
   });
 
   bindFilters();
+  bindSettings();
   openTab(location.hash.slice(1) || 'overview');
   refresh({ reloadBootstrap: true });
 }

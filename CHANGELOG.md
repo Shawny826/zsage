@@ -80,7 +80,23 @@ Windows 用任务计划程序（任务名 `zsage-auto-sync-prices`）；Linux/ma
 启用后，未定价请求不再显示为 0 费用，而是按此价目折算，`source` 标记为 `fallback`。
 它在所有 `rules` 都不匹配后才生效，优先级最低。
 
-#### 5. 前端配置面板
+#### 5. 设置页：逐模型的价格与统计口径
+
+新增与概览/分析/请求事件同级的「设置」标签页。起因是**记录下来的模型名常与官方名对不上**，
+且官方价与本地估算值可能差很多。表格列出 ZCode 记录到的每个模型：
+
+- **启用勾选框**：只统计勾选的模型；匹配不到价格的模型默认不勾选
+- **别名**：多行填同一别名会合并成一行统计（例如 `glm-5.3-flash` 与 `GLM-5.3-Flash` 合成 1668 次请求）
+- **价格四元组 + 币种**：可直接改；与规则价一致时不写盘，继续跟随 `prices.json` 的规则，
+  改过才钉成手动价
+- **models.dev 参考**：自动匹配到的官方名/provider/匹配方式/价格，可一键「采用」
+- **忽略列表**：设置页内可直接编辑 `ignored_models`
+
+保存走 `POST /api/models`，**只按提交上来的键打补丁** —— 不拿 GET 的裁剪视图整体回写，
+否则会抹掉 `_readme`、`defaults` 和规则里的 `peak`（DeepSeek 分时定价）。这一问题在实现中
+被发现并修掉。
+
+#### 6. 前端配置面板
 
 「概览」页与「分析 → 单价表」上方都会显示价格配置摘要，始终可见（未配置时也会说明当前状态）：
 
@@ -90,7 +106,7 @@ Windows 用任务计划程序（任务名 `zsage-auto-sync-prices`）；Linux/ma
 
 改完 `prices.json` 点「刷新」即可看到变化，无需重启服务。
 
-#### 6. `zsage restart`
+#### 7. `zsage restart`
 
 ```bash
 zsage restart           # 重启服务，沿用当前端口
@@ -102,6 +118,12 @@ zsage restart -p 9000   # 重启并换到 9000
 
 ### 修复
 
+- **Windows 上同端口会堆积僵尸服务实例**：`HTTPServer` 默认的 `allow_reuse_address=1`
+  在 Windows 语义下等于"允许抢占"，第二个进程绑同一端口既不报错也收不到请求，
+  于是 8787 上能同时有多个进程在 LISTENING，启动就绪检测永远失败。
+  现在 Windows 下关掉 `allow_reuse_address`（改用自建的 `DashboardServer`），
+  并在启动器里加了 `reclaim_stale_listeners()`：按"命令行指向本目录的 server.py"
+  精确识别并回收端口上的旧实例，不碰其他目录里的 zsage。
 - **筛选下拉框一直只有「全部」选项**（v0.2.0 起就存在）。`refresh()` 用
   `if (!el('f-model').options.length) buildFilters()` 判断是否需要填充，但 `index.html`
   给每个下拉框预置了一个占位选项，`options.length` 恒为 1，导致 `buildFilters()` 从未执行。
@@ -119,7 +141,7 @@ zsage restart -p 9000   # 重启并换到 9000
 ### 文档
 
 - 新增本文件
-- `README.md` 补充端口、重启、价格同步、忽略列表、兜底价等章节
+- `README.md` 补充端口、重启、价格同步、忽略列表、兜底价、设置页等章节
 
 ---
 

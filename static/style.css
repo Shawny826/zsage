@@ -213,3 +213,27 @@ pre.json {
 }
 .notice.info { background: var(--accent-soft); color: #1e3a8a; border-color: #c7d9fb; }
 .spark { display: block; }
+
+/* ---------- 设置页 ---------- */
+.st-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.st-toolbar .sep { width: 1px; height: 18px; background: var(--line); }
+.st-toolbar .spacer { flex: 1; }
+.st-toolbar input[type=text] { min-width: 170px; }
+.st-note { font-size: 12px; margin: 10px 0 0; line-height: 1.7; }
+
+table.st-table td { vertical-align: middle; }
+table.st-table th { white-space: nowrap; }
+table.st-table input[type=text] {
+  min-width: 0; width: 74px; padding: 4px 6px; font-size: 12.5px;
+  border-radius: 6px; text-align: right;
+}
+table.st-table input.st-alias { width: 148px; text-align: left; }
+table.st-table select.st-cur { padding: 3px 4px; font-size: 12.5px; border-radius: 6px; }
+/* 取消勾选的行压暗，但仍可编辑（首列保持原样，方便点回来） */
+table.st-table tr.st-off td { opacity: .45; }
+table.st-table tr.st-off td:first-child { opacity: 1; }
+.st-sub { font-size: 11px; margin-top: 2px; }
+.md-cell { display: flex; flex-direction: column; gap: 2px; font-size: 12px; white-space: normal; }
+.md-cell .st-adopt { align-self: flex-start; padding: 2px 8px; font-size: 11.5px; margin-top: 3px; }
+.ignored-edit { display: flex; gap: 8px; align-items: center; }
+.ignored-edit input[type=text] { flex: 1; min-width: 280px; }

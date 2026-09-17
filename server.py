@@ -30,10 +30,14 @@ from fnmatch import fnmatchcase
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
+import model_catalog as catalog
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 PRICES_PATH = os.path.join(BASE_DIR, "prices.json")
 RUNTIME_PATH = os.path.join(BASE_DIR, "runtime.json")
+# prices.json 有两个写入方（单价表编辑、设置页保存），串行化避免互相覆盖
+PRICES_WRITE_LOCK = threading.Lock()
 
 # 心跳看护：浏览器标签关掉后就没人再 ping，服务自行退出，不留孤儿进程
 VIEWERS = {}
@@ -64,7 +68,8 @@ class Pricing:
         self._lock = threading.Lock()
         self.cfg = {
             "display_currency": "CNY", "usd_to_cny": 7.1, "defaults": {},
-            "rules": [], "ignored_models": [], "unknown_model_price": {"enabled": False}
+            "rules": [], "ignored_models": [], "unknown_model_price": {"enabled": False},
+            "models": {},
         }
         self.reload(force=True)
 
@@ -89,6 +94,11 @@ class Pricing:
             self._ignored = [
                 pattern.lower() for pattern in self.cfg.get("ignored_models", [])
             ]
+            # 设置页按「记录到的模型名」逐条覆盖：别名、是否计入统计、手动价格
+            self._models = {
+                k: v for k, v in (self.cfg.get("models") or {}).items() if isinstance(v, dict)
+            }
+            self._models_lower = {k.lower(): v for k, v in self._models.items()}
             self.display_currency = self.cfg.get("display_currency") or "CNY"
             self.usd_to_cny = float(self.cfg.get("usd_to_cny") or 7.1)
             self.unknown_price = self.cfg.get("unknown_model_price", {"enabled": False})
@@ -114,7 +124,68 @@ class Pricing:
                 return True
         return False
 
+    # -- 逐模型设置（设置页） ---------------------------------------------- #
+    def entry_for(self, model_id: str):
+        """取该模型在设置页里的条目；先精确匹配，再退化到忽略大小写。"""
+        if not model_id:
+            return None
+        return self._models.get(model_id) or self._models_lower.get(model_id.lower())
+
+    def alias_for(self, model_id: str) -> str:
+        """展示/归组用的别名。留空则用记录到的原始模型名。"""
+        entry = self.entry_for(model_id) or {}
+        return (entry.get("alias") or "").strip()
+
+    def display_name(self, model_id: str) -> str:
+        return self.alias_for(model_id) or (model_id or "(未知)")
+
+    def matched_rule_for(self, model_id: str):
+        """只在 rules 里找，不落兜底价。用于判断"这个模型到底匹配上没有"。"""
+        name = (model_id or "").lower()
+        for pattern, rule in self._rules:
+            if fnmatchcase(name, pattern):
+                return rule
+        return None
+
+    def manual_price_for(self, model_id: str):
+        """设置页里手填的价格，优先级最高。返回规则形状的 dict 或 None。"""
+        entry = self.entry_for(model_id) or {}
+        price = entry.get("price")
+        if not isinstance(price, dict):
+            return None
+        if price.get("input") is None and price.get("output") is None:
+            return None
+        return {
+            "match": f"model:{model_id}",
+            "label": self.display_name(model_id),
+            "currency": price.get("currency") or "USD",
+            "input": price.get("input"),
+            "cache_read": price.get("cache_read"),
+            "cache_write": price.get("cache_write"),
+            "output": price.get("output"),
+            "source": "manual",
+            "note": entry.get("note") or "设置页手动填写",
+        }
+
+    def is_enabled(self, model_id: str) -> bool:
+        """是否计入统计。
+
+        ignored_models 命中 -> 排除（硬排除，兼容旧配置）
+        设置页有条目 -> 听 enabled
+        没有条目 -> 能匹配到真实规则才算启用；匹配不上的默认不勾选
+        """
+        if self.is_ignored(model_id):
+            return False
+        entry = self.entry_for(model_id)
+        if entry is not None:
+            return bool(entry.get("enabled", True))
+        return self.matched_rule_for(model_id) is not None or self.manual_price_for(model_id) is not None
+
     def rule_for(self, model_id: str):
+        # 优先级：设置页手填 > 规则表 > 兜底价
+        manual = self.manual_price_for(model_id)
+        if manual is not None:
+            return manual
         name = (model_id or "").lower()
         for pattern, rule in self._rules:
             if fnmatchcase(name, pattern):
@@ -199,6 +270,7 @@ class Pricing:
             "usd_to_cny": self.usd_to_cny,
             "ignored_models": self.cfg.get("ignored_models", []),
             "unknown_model_price": self.cfg.get("unknown_model_price", {"enabled": False}),
+            "models": self.cfg.get("models", {}),
             "rules": [
                 {
                     "match": r.get("match"),
@@ -217,6 +289,55 @@ class Pricing:
 
 
 PRICING = Pricing(PRICES_PATH)
+
+
+# --------------------------------------------------------------------------- #
+# models.dev 目录缓存
+#
+# 目录有 4.6MB，设置页每次打开都去拉不现实，所以缓存起来（TTL 内复用）。
+# 冷启动时丢后台线程去拉，接口先返回现状，前端稍后重试一次即可 —— 不让首屏干等。
+# --------------------------------------------------------------------------- #
+CATALOG_TTL = 6 * 3600
+CATALOG = {"ts": 0.0, "data": None, "loading": False, "error": None}
+CATALOG_LOCK = threading.Lock()
+
+
+def _fetch_catalog_into_cache() -> None:
+    try:
+        data = catalog.fetch_catalog(user_agent="zsage-dashboard")
+        with CATALOG_LOCK:
+            CATALOG.update(data=data, ts=time.time(), error=None)
+        print(f"[catalog] models.dev 目录已缓存：{len(data)} 个带报价的模型")
+    except Exception as exc:
+        with CATALOG_LOCK:
+            CATALOG["error"] = str(exc)
+        print(f"[catalog] 拉取 models.dev 失败：{exc}", file=sys.stderr)
+    finally:
+        with CATALOG_LOCK:
+            CATALOG["loading"] = False
+
+
+def ensure_catalog(force: bool = False) -> None:
+    """确保目录可用。不阻塞：需要拉取时丢后台线程，调用方先用手上的数据。"""
+    now = time.time()
+    with CATALOG_LOCK:
+        if CATALOG["loading"]:
+            return
+        if not force and CATALOG["data"] is not None and (now - CATALOG["ts"]) < CATALOG_TTL:
+            return
+        CATALOG["loading"] = True
+    threading.Thread(target=_fetch_catalog_into_cache, daemon=True).start()
+
+
+def catalog_state() -> dict:
+    with CATALOG_LOCK:
+        return {
+            "ready": CATALOG["data"] is not None,
+            "loading": CATALOG["loading"],
+            "fetched_at": int(CATALOG["ts"] * 1000) if CATALOG["ts"] else None,
+            "error": CATALOG["error"],
+            "size": len(CATALOG["data"]) if CATALOG["data"] else 0,
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -241,22 +362,47 @@ def db_connect() -> sqlite3.Connection:
     return con
 
 
-def not_ignored_sql(con: sqlite3.Connection, column: str = "model_id"):
-    """返回 (SQL 片段, 参数)，把 ignored_models 命中的模型从聚合里一并排除。
+def is_model_enabled(model_id: str) -> bool:
+    """该模型是否计入统计 —— 全站唯一的判定入口。
 
-    通配符匹配只能在 Python 侧算，所以先查出库里实际出现过的 model_id，
-    再拼成 NOT IN。没有配置忽略项时返回空串，调用方拼上 `WHERE 1=1` 即可。
+    优先级：ignored_models 硬排除 > 设置页的显式勾选 > 默认推断。
+    默认推断 = 能匹配到规则，或在 models.dev 里能匹配到价格（"未匹配到的默认不勾选"）。
+    目录尚未就绪时从严，所以启动时会先把目录拉起来。
+    """
+    if PRICING.is_ignored(model_id):
+        return False
+    entry = PRICING.entry_for(model_id)
+    if entry is not None:
+        return bool(entry.get("enabled", True))
+    if PRICING.matched_rule_for(model_id) is not None:
+        return True
+    if PRICING.manual_price_for(model_id) is not None:
+        return True
+    with CATALOG_LOCK:
+        cat = CATALOG["data"]
+    if cat:
+        hit, _how = catalog.match(model_id, cat)
+        return hit is not None
+    return False
+
+
+def excluded_model_sql(con: sqlite3.Connection, column: str = "model_id"):
+    """返回 (SQL 片段, 参数)，把「不计入统计」的模型从聚合里一并排除。
+
+    是否计入要综合 ignored_models、设置页的勾选、以及能否匹配到价格，
+    这些都只能在 Python 侧算，所以先查出库里实际出现过的 model_id 再拼 NOT IN。
+    全都要计入时返回空串，调用方拼上 `WHERE 1=1` 即可。
     """
     names = [
         r["v"] for r in con.execute(
             "SELECT DISTINCT model_id AS v FROM model_usage WHERE model_id IS NOT NULL"
         )
     ]
-    ignored = [m for m in names if PRICING.is_ignored(m)]
-    if not ignored:
+    excluded = [m for m in names if not is_model_enabled(m)]
+    if not excluded:
         return "", []
-    placeholders = ",".join("?" * len(ignored))
-    return f" AND ({column} IS NULL OR {column} NOT IN ({placeholders}))", ignored
+    placeholders = ",".join("?" * len(excluded))
+    return f" AND ({column} IS NULL OR {column} NOT IN ({placeholders}))", excluded
 
 
 def parse_time(value: str, end_of_day: bool = False):
@@ -389,8 +535,8 @@ def load_requests(f: dict):
     finally:
         con.close()
 
-    # 过滤被忽略的模型
-    rows = [r for r in rows if not PRICING.is_ignored(r["model_id"])]
+    # 只保留计入统计的模型（ignored_models + 设置页的勾选状态 + 默认推断）
+    rows = [r for r in rows if is_model_enabled(r["model_id"])]
 
     want = f.get("priced")
     if want == "priced":
@@ -476,12 +622,14 @@ def aggregate(rows) -> dict:
 
     for req in rows:
         add_to(totals, req)
-        model_key = req["model_id"] or "(未知)"
+        # 按别名归组：设了别名的多个记录名会合并成一行（比如 glm-5.3-flash 与 GLM-5.3-Flash）
+        model_key = PRICING.display_name(req["model_id"])
         bucket = by_model.setdefault(model_key, blank_bucket())
         add_to(bucket, req)
         bucket["provider_id"] = req["provider_id"]
         bucket["cost_rule"] = req["cost"].get("label")
         bucket["price_source"] = req["cost"].get("source")
+        bucket["_raw_ids"] = (bucket.get("_raw_ids") or set()) | {req["model_id"] or "(未知)"}
 
         add_to(by_provider.setdefault(req["provider_id"] or "(未知)", blank_bucket()), req)
         project_key = req["project_id"] or "(未关联项目)"
@@ -510,14 +658,15 @@ def aggregate(rows) -> dict:
             item = finalize(bucket)
             item["key"] = key
             for k in extra_keys:
-                item[k] = bucket.get(k)
+                v = bucket.get(k)
+                item["model_ids" if k == "_raw_ids" else k] = sorted(v) if isinstance(v, set) else v
             item["cost_share"] = round(item["cost"] / total_cost, 6) if total_cost else 0.0
             result.append(item)
         result.sort(key=lambda x: x["cost"], reverse=True)
         return result
 
     unpriced_models = sorted(
-        {r["model_id"] for r in rows if not r["cost"]["priced"]}
+        {PRICING.display_name(r["model_id"]) for r in rows if not r["cost"]["priced"]}
     )
     unpriced_tokens = sum(r["tokens"]["total"] for r in rows if not r["cost"]["priced"])
 
@@ -542,7 +691,9 @@ def aggregate(rows) -> dict:
                                           for k, v in bucket.items()}}
             for (dow, hour), bucket in sorted(hourly.items())
         ],
-        "by_model": with_share(by_model, ("provider_id", "cost_rule", "price_source")),
+        "by_model": with_share(
+            by_model, ("provider_id", "cost_rule", "price_source", "_raw_ids")
+        ),
         "by_provider": with_share(by_provider),
         "by_project": with_share(by_project, ("directory",)),
         "by_agent": with_share(by_agent),
@@ -718,6 +869,8 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/prices":
                 PRICING.reload()
                 return self.send_json(PRICING.public_view())
+            if route == "/api/models":
+                return self.send_json(self.api_models())
             if route == "/api/export.csv":
                 return self.export_csv(qs)
         except Exception as exc:  # 让前端看到错误而不是空白
@@ -730,23 +883,37 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
+        route = parsed.path
         # sendBeacon 走 POST，心跳和告别都要在这里也认一遍
-        if parsed.path == "/api/bye":
+        if route == "/api/bye":
             viewer_bye((qs.get("sid") or [""])[0])
             return self.send_json({"ok": True})
-        if parsed.path == "/api/ping":
+        if route == "/api/ping":
             viewer_ping((qs.get("sid") or [""])[0])
             return self.send_json({"ok": True, "viewers": live_viewers()})
-        if parsed.path != "/api/prices":
+        if route == "/api/models/match":
+            # 让设置页能强制重拉 models.dev 目录（默认走 6 小时缓存）
+            ensure_catalog(force=True)
+            return self.send_json({"ok": True, "catalog": catalog_state()})
+        if route not in ("/api/prices", "/api/models"):
             return self.send_text("404", 404)
+
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length).decode("utf-8")
         try:
             data = json.loads(raw)
         except Exception as exc:
             return self.send_json({"error": f"不是合法 JSON：{exc}"}, 400)
-        with open(PRICES_PATH, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
+
+        if route == "/api/models":
+            result = self.save_settings(data)
+            if isinstance(result, tuple):
+                return self.send_json(result[0], result[1])
+            return self.send_json(result)
+
+        with PRICES_WRITE_LOCK:
+            with open(PRICES_PATH, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
         PRICING.reload(force=True)
         return self.send_json({"ok": True, "rules": len(PRICING.cfg.get("rules", []))})
 
@@ -756,8 +923,8 @@ class Handler(BaseHTTPRequestHandler):
         con = db_connect()
         try:
             # 被忽略的模型要从所有聚合里一并剔除，否则下拉框和"命中请求"会跟统计对不上
-            skip, skip_params = not_ignored_sql(con, "model_id")
-            skip_mu, skip_mu_params = not_ignored_sql(con, "mu.model_id")
+            skip, skip_params = excluded_model_sql(con, "model_id")
+            skip_mu, skip_mu_params = excluded_model_sql(con, "mu.model_id")
 
             meta = con.execute(
                 "SELECT MIN(started_at) AS min_ts, MAX(started_at) AS max_ts,"
@@ -833,6 +1000,168 @@ class Handler(BaseHTTPRequestHandler):
             "server_time": int(time.time() * 1000),
         }
 
+    # -- 设置页：逐模型的价格 / 别名 / 是否计入统计 ------------------------- #
+    def api_models(self):
+        PRICING.reload()
+        ensure_catalog()
+        con = db_connect()
+        try:
+            rows = con.execute(
+                "SELECT model_id, COUNT(*) AS n, MAX(started_at) AS last_ts"
+                " FROM model_usage WHERE model_id IS NOT NULL"
+                " GROUP BY model_id ORDER BY n DESC"
+            ).fetchall()
+            providers = {}
+            for r in con.execute(
+                "SELECT DISTINCT model_id, provider_id FROM model_usage"
+                " WHERE model_id IS NOT NULL"
+            ):
+                providers.setdefault(r["model_id"], []).append(r["provider_id"])
+        finally:
+            con.close()
+
+        with CATALOG_LOCK:
+            cat = CATALOG["data"]
+
+        items = []
+        for row in rows:
+            mid = row["model_id"]
+            entry = PRICING.entry_for(mid) or {}
+            rule = PRICING.matched_rule_for(mid)
+            manual = PRICING.manual_price_for(mid)
+            if manual is not None:
+                source = "manual"
+            elif rule is not None:
+                source = "rule:" + str(rule.get("source") or "assumed")
+            else:
+                source = "unmatched"
+
+            matched = entry.get("matched")
+            if cat:  # 目录就绪时按最新目录重算，保证表格里的参考价是新的
+                hit, how = catalog.match(mid, cat)
+                if hit:
+                    _pid, pname, model, _rank = hit
+                    matched = {
+                        "id": model.get("id"),
+                        "provider": pname,
+                        "how": how,
+                        "price": catalog.price_of(model),
+                    }
+                else:
+                    matched = None
+
+            items.append({
+                "model_id": mid,
+                "display_name": PRICING.display_name(mid),
+                "requests": row["n"],
+                "last_ts": row["last_ts"],
+                "providers": sorted(providers.get(mid) or []),
+                "alias": entry.get("alias") or "",
+                "enabled": is_model_enabled(mid),
+                "ignored": PRICING.is_ignored(mid),
+                "source": source,
+                "rule_match": rule.get("match") if rule else None,
+                "rule_price": price_dict(rule),
+                "explicit_price": price_dict(manual),
+                "price": price_dict(PRICING.rule_for(mid)),
+                "models_dev": matched,
+            })
+
+        enabled = sum(1 for i in items if i["enabled"])
+        return {
+            "models": items,
+            "catalog": catalog_state(),
+            "currency": PRICING.display_currency,
+            "summary": {
+                "total": len(items),
+                "enabled": enabled,
+                "excluded": len(items) - enabled,
+                "unmatched": sum(1 for i in items if i["source"] == "unmatched"),
+            },
+        }
+
+    def save_settings(self, payload):
+        """只按提交上来的键打补丁。
+
+        注意不要拿 GET 的结果整体回写：public_view() 是裁剪过的视图，
+        不含 _readme / defaults / 规则里的 peak，整体回写会把这些配置抹掉。
+        """
+        incoming = payload.get("models")
+        ignored = payload.get("ignored_models")
+        if incoming is None and ignored is None:
+            return {"error": "需要 models 或 ignored_models 字段"}, 400
+        if incoming is not None and not isinstance(incoming, dict):
+            return {"error": "models 必须是对象"}, 400
+        if ignored is not None and not isinstance(ignored, list):
+            return {"error": "ignored_models 必须是数组"}, 400
+
+        PRICING.reload()
+        with CATALOG_LOCK:
+            cat = CATALOG["data"]
+        with PRICES_WRITE_LOCK:
+            try:
+                with open(PRICES_PATH, encoding="utf-8") as fh:
+                    config = json.load(fh)
+            except Exception as exc:
+                return {"error": f"读 prices.json 失败：{exc}"}, 500
+
+            if ignored is not None:
+                config["ignored_models"] = [
+                    str(p).strip() for p in ignored if str(p).strip()
+                ]
+
+            if incoming is not None:
+                models_cfg = config.get("models")
+                if not isinstance(models_cfg, dict):
+                    models_cfg = {}
+
+                for mid, row in incoming.items():
+                    if not isinstance(row, dict):
+                        continue
+                    entry: dict = {}
+                    alias = (row.get("alias") or "").strip()
+                    if alias:
+                        entry["alias"] = alias
+                    entry["enabled"] = bool(row.get("enabled", True))
+
+                    # 价格：与规则价一致就不落盘 —— 那行继续跟随 prices.json 里的规则；
+                    # 只有用户改过、或本来就没有规则可跟，才钉成手动价。
+                    submitted = row.get("price")
+                    if isinstance(submitted, dict):
+                        rule_price = price_dict(PRICING.matched_rule_for(mid))
+                        has_value = (_num(submitted.get("input")) is not None
+                                     or _num(submitted.get("output")) is not None)
+                        if has_value and not _same_price(submitted, rule_price):
+                            entry["price"] = {
+                                "currency": submitted.get("currency") or "USD",
+                                "input": _num(submitted.get("input")),
+                                "cache_read": _num(submitted.get("cache_read")),
+                                "cache_write": _num(submitted.get("cache_write")),
+                                "output": _num(submitted.get("output")),
+                            }
+
+                    if cat:
+                        hit, how = catalog.match(mid, cat)
+                        if hit:
+                            _pid, pname, model, _rank = hit
+                            entry["matched"] = {
+                                "id": model.get("id"), "provider": pname, "how": how,
+                            }
+                    models_cfg[mid] = entry
+                config["models"] = models_cfg
+
+            try:
+                with open(PRICES_PATH, "w", encoding="utf-8") as fh:
+                    json.dump(config, fh, ensure_ascii=False, indent=2)
+            except OSError as exc:
+                return {"error": f"写 prices.json 失败：{exc}"}, 500
+        PRICING.reload(force=True)
+        return {
+            "ok": True,
+            "models": len(PRICING.cfg.get("models") or {}),
+            "ignored_models": PRICING.cfg.get("ignored_models") or [],
+        }
+
     def api_events(self, qs):
         filters = parse_filters(qs)
         rows = load_requests(filters)
@@ -903,7 +1232,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_live(self):
         con = db_connect()
         try:
-            skip, skip_params = not_ignored_sql(con, "mu.model_id")
+            skip, skip_params = excluded_model_sql(con, "mu.model_id")
             rows = [
                 row_to_request(r)
                 for r in con.execute(
@@ -970,6 +1299,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+class DashboardServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # Windows 的 SO_REUSEADDR 语义等于"允许抢占"：第二个进程绑同一端口既不报错也收不到
+    # 请求，结果是同端口堆一堆僵尸实例、启动检测永远失败。所以 Windows 下必须关掉。
+    allow_reuse_address = os.name != "nt"
+
+
 def _maybe_json(text):
     if not text:
         return None
@@ -977,6 +1313,41 @@ def _maybe_json(text):
         return json.loads(text)
     except Exception:
         return text
+
+
+def _num(value):
+    """价格字段可能来自 input 元素（字符串），统一成 float 或 None。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def price_dict(rule) -> dict | None:
+    """把一条规则/手动价裁成前端要的四元组。"""
+    if not rule:
+        return None
+    return {
+        "currency": rule.get("currency") or "USD",
+        "input": rule.get("input"),
+        "cache_read": rule.get("cache_read"),
+        "cache_write": rule.get("cache_write"),
+        "output": rule.get("output"),
+    }
+
+
+def _same_price(a: dict, b) -> bool:
+    """判断提交上来的价格与规则价是否一致 —— 一致就不必钉成手动价。"""
+    if not isinstance(b, dict):
+        return False
+    if (a.get("currency") or "USD") != (b.get("currency") or "USD"):
+        return False
+    for k in ("input", "cache_read", "cache_write", "output"):
+        if _num(a.get(k)) != _num(b.get(k)):
+            return False
+    return True
 
 
 def main():
@@ -1005,10 +1376,12 @@ def main():
         print("用 --db 指定 ZCode 的 db.sqlite 路径。", file=sys.stderr)
         return 1
 
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    server = DashboardServer((args.host, args.port), Handler)
     host, port = server.server_address[0], server.server_address[1]
     url = f"http://{host}:{port}/"
     write_runtime(host, port)
+    # 提前把 models.dev 目录拉起来：默认勾选状态依赖它，"目录没就绪"会让统计口径短暂从严
+    ensure_catalog()
     print(f"ZCode 用量看板：{url}")
     print(f"数据库：{DB_PATH}")
     print(f"单价表：{PRICES_PATH}（改完刷新页面即生效）")

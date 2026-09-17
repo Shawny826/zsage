@@ -65,6 +65,8 @@ zsage uninstall  # 移除命令入口与自启
 token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/trace/session。
 支持按当前筛选导出 CSV。
 
+**设置**：逐模型管理价格与统计口径，见[下文](#设置逐模型的价格与统计口径)。
+
 过滤器覆盖：时间范围、模型、Provider、项目、Agent、来源（main_turn / subagent / compact / session_title）、
 状态、是否已定价、关键字。
 
@@ -193,7 +195,7 @@ Windows 用任务计划程序实现（任务名 `zsage-auto-sync-prices`），Li
 
 ## 忽略特定模型
 
-在 `prices.json` 中配置 `ignored_models` 可以排除不想统计的模型：
+在 `prices.json` 中配置 `ignored_models` 可以排除不想统计的模型（也可在设置页里改）：
 
 ```json
 {
@@ -226,6 +228,53 @@ Windows 用任务计划程序实现（任务名 `zsage-auto-sync-prices`），Li
 ```
 
 设置 `enabled: false` 可禁用此功能。
+
+## 设置：逐模型的价格与统计口径
+
+「设置」标签页把 ZCode 记录到的每个模型列成一张可编辑的表格。之所以需要它，
+是因为**记录下来的模型名经常和官方名对不上**（同一个模型可能以 `glm-5.3-flash`、
+`GLM-5.3-Flash`、`GLM-5.3-1M` 三种名字出现；`claude-opus-5` 还有 `claude-opus-5-kiro`、
+`kiro/claude-opus-5` 两个变体），而且官方价目和你手上的估算值可能差很多。
+
+表格每行包含：
+
+| 列 | 说明 |
+|---|---|
+| 启用 | 勾选才计入统计。**匹配不到价格的模型默认不勾选** |
+| 记录的模型名 | ZCode 实际记录的原名，只读 |
+| 别名 | 可编辑。**多行填同一个别名会被合并成一行统计** |
+| 输入 / 缓存读 / 缓存写 / 输出 | 可编辑的价格，单位是每百万 token |
+| 币种 | USD / CNY |
+| 价格来源 | 规则（哪条规则命中）／ 手填 ／ 未匹配 |
+| models.dev 参考 | 自动匹配到的官方名、provider、匹配方式与价格，可一键「采用」 |
+
+几个设计取舍：
+
+- **价格与规则一致时不写盘**：那一行继续跟随 `prices.json` 里的规则，
+  以后你改规则它会跟着变；只有你改过（或压根没有规则可跟）才钉成手动价。
+- **别名做归组**：合并后的行在「分析 → 模型明细」里显示为一行，
+  原始记录名仍可在接口的 `model_ids` 里查到。
+- **默认勾选规则**：能匹配到规则、或能在 models.dev 匹配到价格的模型默认勾选；
+  两者都匹配不到的默认不勾选（可在表格里手动勾上）。
+- `ignored_models` 是比"取消勾选"更彻底的做法：命中的模型完全不出现在看板里，
+  包括下拉框和导出。设置页底部也能直接编辑这个列表。
+
+改动保存后会写回 `prices.json` 的 `models` 段，形如：
+
+```json
+"models": {
+  "glm-5.3-flash": {
+    "alias": "GLM-5.3-Flash",
+    "enabled": true,
+    "matched": {"id": "glm-5.3-flash", "provider": "Zhipu AI", "how": "精确"}
+  },
+  "claude-opus-5-kiro": {
+    "enabled": true,
+    "price": {"currency": "USD", "input": 5, "cache_read": 0.5, "cache_write": 6.25, "output": 25}
+  },
+  "test-dsf": {"enabled": false}
+}
+```
 
 ## 排错
 

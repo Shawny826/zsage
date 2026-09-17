@@ -30,6 +30,7 @@
   <button data-tab="overview" class="active">概览</button>
   <button data-tab="analytics">分析</button>
   <button data-tab="events">请求事件</button>
+  <button data-tab="settings">设置</button>
 </nav>
 
 <section class="filters" id="filters">
@@ -124,6 +125,37 @@
         <header><h2>请求事件</h2><span class="hint" id="ev-hint"></span></header>
         <div class="body tight"><div id="ev-table"></div></div>
         <div class="pager" id="ev-pager"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-settings" class="tab-panel hidden">
+    <div class="stack">
+      <div class="card">
+        <header>
+          <h2>模型设置</h2>
+          <span class="hint" id="st-hint">勾选的模型才计入统计；改完记得保存</span>
+        </header>
+        <div class="body">
+          <div class="st-toolbar">
+            <button id="st-save" class="primary">保存</button>
+            <button id="st-match">重新匹配 models.dev</button>
+            <span class="sep"></span>
+            <button id="st-check-matched">勾选已匹配</button>
+            <button id="st-uncheck-unmatched">取消未匹配</button>
+            <span class="sep"></span>
+            <input type="text" id="st-filter" placeholder="筛选模型名 / 别名 / 官方名">
+            <span class="spacer"></span>
+            <span id="st-status" class="muted"></span>
+          </div>
+          <p class="muted st-note" id="st-note"></p>
+        </div>
+        <div class="body tight"><div id="st-table"></div></div>
+      </div>
+      <div class="card">
+        <header><h2>忽略列表（ignored_models）</h2>
+          <span class="hint">这里命中的模型完全不出现在看板里，是比取消勾选更彻底的做法</span></header>
+        <div class="body"><div id="st-ignored"></div></div>
       </div>
     </div>
   </div>

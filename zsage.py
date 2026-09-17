@@ -48,6 +48,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 import ensure_running as er  # noqa: E402  复用幂等启动/停止逻辑
+import model_catalog as catalog  # noqa: E402  models.dev 目录抓取与匹配
 
 __version__ = "0.3.0"
 DEFAULT_BIN_DIR = Path.home() / ".local" / "bin"
@@ -453,78 +454,9 @@ def cmd_doctor() -> int:
 # --------------------------------------------------------------------------- #
 # 入口
 # --------------------------------------------------------------------------- #
-MODELS_DEV_URL = "https://models.dev/api.json"
-
-
-def _normalize_model(name: str) -> str:
-    """归一化模型名：只留小写字母数字，便于跨厂商比对（glm-5.3 / GLM_5.3 -> glm53）。"""
-    import re
-
-    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
-
-
-# 同一模型常被多个 provider 收录（官方 + 各种转售/聚合）。
-# 归一化名冲突时优先取官方，免得 gpt-5.6-sol 拿到某个转售商的价格。
-FIRST_PARTY_PROVIDERS = {
-    "zhipuai", "zai", "zai-coding-plan", "zhipuai-coding-plan",
-    "anthropic", "openai", "google", "google-vertex", "google-vertex-anthropic",
-    "deepseek", "moonshotai", "moonshotai-cn", "xai", "meta", "mistral",
-    "alibaba", "qwen", "cohere", "amazon-bedrock", "azure", "perplexity",
-    "minimax", "baidu", "bytedance", "stepfun",
-}
-
-
 def _load_models_dev_catalog() -> dict:
-    """拉 models.dev 全量目录，返回 {归一化名: (provider_id, provider_name, model)}。
-
-    只收录带报价的模型 —— coding plan 一类的 provider 报价是空的，收进来没有意义。
-    """
-    req = urllib.request.Request(
-        MODELS_DEV_URL,
-        headers={"User-Agent": f"zsage/{__version__}"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = json.loads(resp.read().decode("utf-8"))
-
-    catalog: dict = {}
-    for pid, provider in raw.items():
-        rank = 0 if pid in FIRST_PARTY_PROVIDERS else 1
-        for model in (provider.get("models") or {}).values():
-            cost = model.get("cost") or {}
-            if not cost.get("input") and not cost.get("output"):
-                continue
-            key = _normalize_model(model.get("id"))
-            if not key:
-                continue
-            prev = catalog.get(key)
-            if prev is None or rank < prev[3]:
-                catalog[key] = (pid, provider.get("name") or pid, model, rank)
-    return catalog
-
-
-def _match_catalog(model_id: str, catalog: dict):
-    """给一个 ZCode 模型名在目录里找价格。返回 (命中项, 匹配方式说明) 或 (None, "")。
-
-    三级策略：精确 -> 包含 -> 模糊（difflib 相似度）。模糊匹配正是"未识别模型近似匹配"。
-    """
-    import difflib
-
-    key = _normalize_model(model_id)
-    if not key:
-        return None, ""
-    if key in catalog:
-        return catalog[key], "精确"
-    subs = [k for k in catalog if k in key or key in k]
-    if subs:
-        return catalog[max(subs, key=len)], "包含"
-    best, score = None, 0.0
-    for k in catalog:
-        ratio = difflib.SequenceMatcher(None, key, k).ratio()
-        if ratio > score:
-            best, score = k, ratio
-    if best and score >= 0.82:
-        return catalog[best], f"近似({score:.2f})"
-    return None, ""
+    """拉 models.dev 目录（实现在 model_catalog，server 侧也用同一份）。"""
+    return catalog.fetch_catalog(user_agent=f"zsage/{__version__}")
 
 
 def _zcode_model_ids(db_path: str):
@@ -542,11 +474,6 @@ def _zcode_model_ids(db_path: str):
         ]
     finally:
         con.close()
-
-
-def _glob_safe(model_id: str) -> str:
-    """模型名里若含通配符元字符，就别包 * ，改用精确串，免得匹配到别的模型。"""
-    return model_id if any(ch in model_id for ch in "*?[") else f"*{model_id}*"
 
 
 def cmd_sync_prices(auto_mode: bool = False) -> int:
@@ -590,7 +517,7 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
     if not auto_mode:
         print(f"本地共 {len(models)} 个模型，正在拉取 models.dev 目录…")
     try:
-        catalog = _load_models_dev_catalog()
+        cat = _load_models_dev_catalog()
     except urllib.error.URLError as exc:
         print(f"✗ 拉取 models.dev 失败（网络问题？）：{exc}", file=sys.stderr)
         return 1
@@ -598,7 +525,7 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
         print(f"✗ 解析 models.dev 失败：{exc}", file=sys.stderr)
         return 1
     if not auto_mode:
-        print(f"models.dev 带报价的模型 {len(catalog)} 个")
+        print(f"models.dev 带报价的模型 {len(cat)} 个")
 
     today = time.strftime("%Y-%m-%d")
     added, refreshed, unresolved, already, stale = [], [], [], [], []
@@ -610,7 +537,7 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
             already.append((mid, count, existing))
             continue
 
-        hit, how = _match_catalog(mid, catalog)
+        hit, how = catalog.match(mid, cat)
         if hit is None:
             # 有旧规则就保留（这次没匹配上不代表要删），没有才算真的缺价
             (stale if existing is not None else unresolved).append((mid, count))
@@ -619,7 +546,7 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
         _pid, pname, model, _rank = hit
         cost = model.get("cost") or {}
         entry = {
-            "match": _glob_safe(mid),
+            "match": catalog.glob_safe(mid),
             "label": model.get("name") or mid,
             "currency": "USD",
             "input": cost.get("input"),
