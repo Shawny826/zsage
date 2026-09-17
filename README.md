@@ -86,6 +86,8 @@ token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/t
 
 - `match` 支持 `*` 通配、大小写不敏感，按数组顺序首次命中生效（例外规则写在前面）
 - `currency` 每条规则可写 CNY 或 USD，汇总按 `usd_to_cny` 换算成 `display_currency`
+  （仓库里预置的规则已统一为 USD，`display_currency` 也是 USD；要改回人民币只需把
+  `display_currency` 设成 `CNY`，规则不必动，折算会自动进行）
 - `source: "official"` = 厂商公开价目；`"assumed"` = 估算（UI 会打「估算」标签提醒你核对）
 - `peak` 支持分时定价（如 DeepSeek 高峰 $0.30/$0.006/$1.20、低谷减半、窗口 01:00–04:00 与 06:00–10:00 UTC 工作日）
 - **`ignored_models`** 忽略列表：匹配到的模型请求不会计入统计和费用（支持通配符）
@@ -247,7 +249,7 @@ Windows 用任务计划程序实现（任务名 `zsage-auto-sync-prices`），Li
 | 记录的模型名 | ZCode 实际记录的原名，只读 |
 | 别名 | 可编辑。**多行填同一个别名会被合并成一行统计** |
 | 输入 / 缓存读 / 缓存写 / 输出 | 可编辑的价格，单位是每百万 token |
-| 币种 | USD / CNY |
+| 币种 | USD / CNY（预置规则已统一为 USD） |
 | 价格来源 | 规则（哪条规则命中）／ 手填 ／ 未匹配 |
 | models.dev 参考 | 自动匹配到的官方名、provider、匹配方式与价格，可一键「采用」 |
 

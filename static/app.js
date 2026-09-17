@@ -30,11 +30,14 @@ function fmtMoney(v) {
   return curSym() + v.toFixed(d);
 }
 
-function fmtUSD(v) {
-  const rate = state.bootstrap?.pricing?.usd_to_cny || 7.1;
-  const c = state.bootstrap?.pricing?.display_currency || 'CNY';
-  const usd = c === 'USD' ? v : v / rate;
-  return '$' + (usd >= 100 ? usd.toFixed(0) : usd >= 1 ? usd.toFixed(2) : usd.toFixed(4));
+/** 副币种：主展示是 CNY 就折算成 USD，反之折算成 CNY。两边都不能再显示同一个符号。 */
+function altMoney(v) {
+  const price = state.bootstrap?.pricing || {};
+  const rate = price.usd_to_cny || 7.1;
+  const isUSD = (price.display_currency || 'CNY') === 'USD';
+  const alt = isUSD ? v * rate : v / rate;
+  const sym = isUSD ? '¥' : '$';
+  return sym + (alt >= 100 ? alt.toFixed(0) : alt >= 1 ? alt.toFixed(2) : alt.toFixed(4));
 }
 
 function fmtMs(ms) {
@@ -327,8 +330,7 @@ function kpiCard(label, value, foot, opts = {}) {
 function renderOverview() {
   const s = state.summary, k = s.kpi;
   const running = (state.live?.running || []).length;
-  const usdNote = (state.bootstrap?.pricing?.display_currency === 'CNY')
-    ? `≈ ${fmtUSD(k.cost)}` : `≈ ${curSym()}${(k.cost * (state.bootstrap?.pricing?.usd_to_cny || 7.1)).toFixed(2)}`;
+  const usdNote = `≈ ${altMoney(k.cost)}`;
   const billed = k.input_fresh + k.cache_read;
   el('ov-kpis').innerHTML = [
     kpiCard('请求数', fmtInt(k.requests), `会话 ${fmtInt(k.sessions)} · 轮次 ${fmtInt(k.turns)}${running ? ` · <span class="tag run">进行中 ${running}</span>` : ''}`),
@@ -502,7 +504,8 @@ function renderCacheCard() {
   // 命中部分本可按原价计费，实际只付缓存价，差额即省下的钱（按单价表币种算完再换算成展示币种）
   let saved = 0;
   s.by_model.forEach((m) => {
-    const p = priceOf.get(m.key);
+    // by_model 的 key 是别名（可能把多个记录名并成一行），所以按 model_ids 逐个找价格
+    const p = (m.model_ids || [m.key]).map((id) => priceOf.get(id)).find(Boolean);
     if (!p || p.input == null) return;
     const unitCache = p.cache_read != null ? p.cache_read : p.input * 0.1;
     const delta = (p.input - unitCache) * (m.cache_read / 1e6);      // 以单价表币种计
@@ -702,7 +705,7 @@ async function openDrawer(id) {
       ${row('状态', (STATUS_TAG[r.status] || esc(r.status)) + (r.finish_reason ? ` <span class="tag mut">${esc(r.finish_reason)}</span>` : ''))}
       ${row('模型 / Provider', `${esc(r.model_id)} <span class="muted">${esc(r.provider_id)}</span>`)}
       ${row('单价规则', c.priced ? `${esc(c.label || '')} <span class="tag ${c.source === 'official' ? 'ok' : 'est'}">${c.source === 'official' ? '官方价' : '估算'}</span>` : '<span class="tag est">未定价</span>')}
-      ${row('费用', `<b>${fmtMoney(c.total)}</b> <span class="muted">(${fmtUSD(c.total)})</span>`)}
+      ${row('费用', `<b>${fmtMoney(c.total)}</b> <span class="muted">(${altMoney(c.total)})</span>`)}
       ${row('项目', esc(r.project_dir || '—'))}
       ${row('会话', `${esc(r.session_title || '—')}<div class="muted" style="font-size:11.5px">${esc(r.session_id || '')}</div>`)}
       ${row('Agent / 来源', `${esc(r.agent || '—')} · ${esc(r.query_source || '')}`)}

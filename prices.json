@@ -7,7 +7,7 @@
     "peak 用于分时定价（目前只有 DeepSeek）：命中窗口用高峰价，否则乘以 offpeak_ratio。",
     "ignored_models：忽略列表，匹配到的模型请求不会计入统计和费用（支持通配符）。"
   ],
-  "display_currency": "CNY",
+  "display_currency": "USD",
   "usd_to_cny": 7.1,
   "ignored_models": [
     "test-dsf",
@@ -159,24 +159,24 @@
     {
       "match": "*kimi-k3*",
       "label": "Kimi K3",
-      "currency": "CNY",
-      "input": 20,
-      "cache_read": 2,
+      "currency": "USD",
+      "input": 2.816901,
+      "cache_read": 0.28169,
       "cache_write": null,
-      "output": 100,
+      "output": 14.084507,
       "source": "official",
-      "note": "Kimi 官方价目：¥20 / 缓存命中 ¥2 / ¥100"
+      "note": "Kimi 官方价目：¥20 / 缓存命中 ¥2 / ¥100　[原价 20/2/100 CNY/M，按 1 USD = 7.1 CNY 折算]"
     },
     {
       "match": "*kimi-k2*",
       "label": "Kimi K2.x",
-      "currency": "CNY",
-      "input": 6.5,
-      "cache_read": 1.1,
+      "currency": "USD",
+      "input": 0.915493,
+      "cache_read": 0.15493,
       "cache_write": null,
-      "output": 27,
+      "output": 3.802817,
       "source": "official",
-      "note": "Kimi 官方价目：¥6.5 / 缓存命中 ¥1.1 / ¥27"
+      "note": "Kimi 官方价目：¥6.5 / 缓存命中 ¥1.1 / ¥27　[原价 6.5/1.1/27 CNY/M，按 1 USD = 7.1 CNY 折算]"
     },
     {
       "match": "*gpt-5.6*",

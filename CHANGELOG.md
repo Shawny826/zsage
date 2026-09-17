@@ -134,6 +134,16 @@ zsage restart -p 9000   # 重启并换到 9000
 
 ### 修复
 
+- **价格统一为美元**：此前规则里混着 USD 与 CNY（Kimi K3/K2 是人民币报价），展示币种是 CNY。
+  现在把两条 CNY 规则按 `usd_to_cny` 折算成 USD（原始人民币报价保留在各自的 `note` 里，
+  便于日后核对汇率或改回），并把 `display_currency` 设为 USD。16 条规则币种一致。
+  想改回人民币只需把 `display_currency` 设成 `CNY`，规则不必动。
+- **切到 USD 展示后副币种显示错乱**：概览 KPI 会渲染出 `≈ $2554` 这种双重美元符号
+  （数值其实是人民币）。`fmtUSD` 改为通用的 `altMoney()` —— 主币种是 CNY 就折算成 USD，
+  反之折算成 CNY，两边不会再显示同一个符号；请求详情里的费用行同理。
+- **缓存效率卡片会漏算别名合并的模型**：它用 `by_model[].key` 去查以 `model_id` 为键的
+  价格表，而别名功能上线后 `key` 变成别名（如 `GLM-5.3-Flash`），查不到就整组跳过。
+  改为按 `model_ids` 逐个找价格。
 - **概览页的"估算值"提示把话说反了**：原文案写"没取到官方价目"，读起来像 models.dev 里
   没有这些模型；真实含义是"当前用的是 prices.json 里的估算价，而 models.dev 上有对应价格
   可以换过去"（Claude Opus、GPT-5.6、Gemini 3.8 Flash、Grok 4.6 都有精确匹配）。
