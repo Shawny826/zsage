@@ -859,6 +859,8 @@ async function refresh({ reloadBootstrap = false } = {}) {
     ]);
     state.summary = summary;
     state.live = live;
+    // bootstrap 刚到货：直接开 #settings 的那次 renderIgnored 还没读到忽略列表，这里补一次
+    if (state.tab === 'settings' && state.ignoredDraft === null) renderIgnored();
 
     el('db-info').textContent =
       `${state.bootstrap.total_rows} 条记录 · ${fmtTime(state.bootstrap.range.min)} ~ ${fmtTime(state.bootstrap.range.max)} · ${state.bootstrap.db_path}`;
@@ -1101,7 +1103,18 @@ function stAgeText(seconds) {
 
 /** 忽略列表：已选项做成可删的 chip，新增项从下拉里挑（也允许直接敲通配符） */
 function renderIgnored() {
-  const pats = state.ignoredDraft || [];
+  // draft 是"用户改到一半"的副本，只在 bootstrap 到手后初始化一次。
+  // 直接用 #settings 打开时 bootstrap 可能还在路上 —— 那会儿要是把 draft 定成空数组，
+  // 界面会显示成"还没有忽略任何模型"，一点保存就把已有列表清掉；
+  // 而且 draft 一旦不是 null 就再也不会重新读，错到底。所以这里宁可不渲染编辑区。
+  if (state.ignoredDraft === null && state.bootstrap) {
+    state.ignoredDraft = [...(state.bootstrap.pricing?.ignored_models || [])];
+  }
+  if (state.ignoredDraft === null) {
+    el('st-ignored').innerHTML = '<p class="muted st-note">正在读取忽略列表…</p>';
+    return;
+  }
+  const pats = state.ignoredDraft;
   const allModels = (state.models?.models || []).map((m) => m.model_id);
   const taken = new Set(pats.map((p) => p.toLowerCase()));
   const options = allModels
@@ -1170,8 +1183,8 @@ async function loadModels({ retries = 24 } = {}) {
     el('st-status').textContent = '加载失败：' + e.message;
     return;
   }
-  if (state.ignoredDraft === null) {
-    state.ignoredDraft = [...((state.bootstrap?.pricing?.ignored_models) || [])];
+  if (state.ignoredDraft === null && state.bootstrap) {
+    state.ignoredDraft = [...(state.bootstrap.pricing?.ignored_models || [])];
   }
   renderModels();
   renderIgnored();

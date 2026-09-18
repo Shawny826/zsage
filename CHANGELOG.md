@@ -163,6 +163,17 @@ zsage restart -p 9000   # 重启并换到 9000
 
 ### 修复
 
+- **直接打开 `#settings` 会把忽略列表读成空，且一点「保存」就真的清空它**（改版配色时
+  顺手发现的旧 bug）：`state.ignoredDraft` 只在 `=== null` 时从
+  `bootstrap.pricing.ignored_models` 初始化，而 `openTab('settings')` 里的 `loadModels()`
+  和 `refresh()` 里的 bootstrap 抓取是并发跑的 —— 若 `#settings` 就是首屏
+  （标签页的 hash 会被 `replaceState` 留在地址栏，所以很容易再次命中），
+  `loadModels` 可能先落地，draft 被定成 `[]`，而 draft 一旦不是 null 就再也不会重读。
+  界面于是显示"还没有忽略任何模型"，此时点保存会提交 `ignored_models: []`，
+  把已有的 test-dsf / omen-alpha / ox-alpha-free / gpt-5.5 四条抹掉。
+  现在 draft 只在 bootstrap 到手后初始化；还没读到就只渲染一行"正在读取忽略列表…"，
+  编辑区和保存按钮都不出现，`refresh()` 拿到 bootstrap 后再补渲染一次。
+
 - **概览的估算提示会把自己填的价格也算进去**：判断条件是 `source !== 'official'`，
   于是 `manual`（用户在设置页填或"采用"的价）和 `models.dev`（同步来的）都被当成估算值
   提示出来 —— 但前者恰恰是用户核对过的。改为只提示 `assumed`（仓库按同族价估的）
