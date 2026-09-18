@@ -129,6 +129,28 @@ token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/t
 - **开机自启**：`zsage install --autostart` 只拉起常驻服务、不弹窗；配合面板标签的工作区恢复机制，
   打开 ZCode 时看板标签会自己回来。
 
+## 更新与生效
+
+改完东西要不要重启，取决于改的是什么：
+
+| 改动 | 生效方式 |
+|---|---|
+| `.py` 代码（`git pull` 之后同理） | **必须 `zsage restart`**。服务是常驻进程，不会自己重载代码 |
+| `prices.json` | 不用重启，刷新页面即生效（按文件 mtime 热加载） |
+| `models_dev_cache.json` / `fx_rate_cache.json` | 不用重启，下次读取即生效 |
+| 换了仓库目录 | 必须重跑 `python zsage.py install` 重写 shim，再 `zsage restart` |
+
+最后一条容易被忽略：`install` 会把**解释器与脚本路径写死成安装时所在仓库的绝对路径**，
+shim 本身不知道"仓库搬家了"。所以怀疑"改了没生效"时，先看它到底在跑哪份代码：
+
+```bash
+grep ZSAGE_PY ~/.local/bin/zsage.cmd    # Windows
+cat ~/.local/bin/zsage                  # Linux / macOS
+cat runtime.json                        # 服务记录的 url / pid / port
+```
+
+shim 指向的路径不是你以为的那份，就是问题所在 —— 重跑 `python zsage.py install` 即可。
+
 ## 配置
 
 | 方式 | 说明 |
@@ -295,7 +317,10 @@ Windows 用任务计划程序实现（任务名 `zsage-auto-sync-prices`），Li
 | 症状 | 处理 |
 |---|---|
 | `zsage` 未找到 | shim 目录不在 PATH：跑 `zsage doctor`，或重开终端 |
+| 改了代码但页面没变化 | 服务是常驻进程，`zsage restart` 才会加载新代码；换过仓库目录还要先重跑 `python zsage.py install` |
 | 启动失败 | 看 `runtime.json`；`zsage doctor` 查端口与 Python 路径 |
+| 启动失败，但接口其实有响应 | Windows 下同端口堆了多个实例（`SO_REUSEADDR` 允许静默抢占，第二个进程绑上既不报错也收不到请求）。数一下有几个：`netstat -ano \| grep -E ":(8787\|8788\|8789)\s.*LISTENING"`；确认某个 pid 是不是本目录的：`powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=<pid>').CommandLine"` |
+| 提示"服务没在 10 秒内就绪" | 就绪探针打的是 `/api/live` 且要求 HTTP 200，所以**任何热路径接口抛异常都会被报成启动失败**。别只看启动提示，直接 `curl http://127.0.0.1:8787/api/live` 看响应体 |
 | 页面提示"连不上本地服务" | 服务被 `stop` 或换了端口，重新 `zsage` 即可 |
 | 费用为 0 / 有"未定价"提示 | `prices.json` 缺对应模型规则，加一条即可 |
 | 剪贴板没复制上 | 剪贴板被其他程序占用，手动复制打印的地址（不影响功能） |
