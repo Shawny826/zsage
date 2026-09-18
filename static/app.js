@@ -78,9 +78,11 @@ const STATUS_TAG = {
 };
 
 const DOW = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+// 取 ZCode 内置页的图表色（--color-usage-chart-1..6），并交给 CSS 变量，
+// 这样浅色/深色主题切换时不用重新渲染。只在 style 属性里用（var() 在 SVG 表现属性里无效）。
 const COLORS = {
-  input: '#4c8dff', cache_read: '#9db4f7', cache_write: '#c4a6f5',
-  output: '#fb923c', cost: '#7c3aed', req: '#93b4f0', accent: '#2f6feb',
+  input: 'var(--c-input)', cache_read: 'var(--c-cache)', cache_write: 'var(--c-write)',
+  output: 'var(--c-output)', cost: 'var(--c-cost)', req: 'var(--c-req)', accent: 'var(--accent)',
 };
 const TOKEN_LEGEND = [
   { key: 'input_fresh', label: '新增输入', color: COLORS.input },
@@ -180,22 +182,22 @@ function chartBarsLine(container, rows) {
   let s = svgOpen(W, H);
   for (let i = 0; i <= 4; i++) {
     const y = m.t + (ih / 4) * i;
-    s += `<line x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}" stroke="#eef1f4" stroke-width="1"/>`;
+    s += `<line class="chart-grid" x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}"/>`;
     s += `<text x="${m.l - 8}" y="${y + 3}" text-anchor="end">${fmtTok(maxBar * (4 - i) / 4)}</text>`;
     s += `<text x="${m.l + iw + 8}" y="${y + 3}" text-anchor="start">${fmtMoney(maxLine * (4 - i) / 4)}</text>`;
   }
   rows.forEach((r, i) => {
     const y = yBar(r.requests);
-    s += `<rect x="${x(i) - barW / 2}" y="${y}" width="${barW}" height="${m.t + ih - y}" fill="${COLORS.req}" rx="2"/>`;
+    s += `<rect x="${x(i) - barW / 2}" y="${y}" width="${barW}" height="${m.t + ih - y}" style="fill:${COLORS.req}" rx="2"/>`;
     if (r.errors) {
       const ey = yBar(r.errors);
-      s += `<rect x="${x(i) - barW / 2}" y="${ey}" width="${barW}" height="${m.t + ih - ey}" fill="#e03131" rx="2"/>`;
+      s += `<rect x="${x(i) - barW / 2}" y="${ey}" width="${barW}" height="${m.t + ih - ey}" style="fill:var(--err)" rx="2"/>`;
     }
   });
   const pts = rows.map((r, i) => `${x(i)},${yLine(r.cost)}`).join(' ');
-  s += `<polyline points="${pts}" fill="none" stroke="${COLORS.cost}" stroke-width="2" stroke-linejoin="round"/>`;
+  s += `<polyline points="${pts}" fill="none" style="stroke:${COLORS.cost}" stroke-width="2" stroke-linejoin="round"/>`;
   rows.forEach((r, i) => {
-    s += `<circle cx="${x(i)}" cy="${yLine(r.cost)}" r="2.5" fill="#fff" stroke="${COLORS.cost}" stroke-width="1.6"/>`;
+    s += `<circle cx="${x(i)}" cy="${yLine(r.cost)}" r="2.5" style="fill:var(--panel);stroke:${COLORS.cost}" stroke-width="1.6"/>`;
   });
   const step = Math.ceil(rows.length / 12);
   rows.forEach((r, i) => {
@@ -222,7 +224,7 @@ function chartStacked(container, rows, series) {
   let s = svgOpen(W, H);
   for (let i = 0; i <= 4; i++) {
     const y = m.t + (ih / 4) * i;
-    s += `<line x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}" stroke="#eef1f4"/>`;
+    s += `<line class="chart-grid" x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}"/>`;
     s += `<text x="${m.l - 8}" y="${y + 3}" text-anchor="end">${fmtTok(maxV * (4 - i) / 4)}</text>`;
   }
   rows.forEach((r, i) => {
@@ -233,7 +235,7 @@ function chartStacked(container, rows, series) {
       if (!v) return;
       const h = (v / maxV) * ih;
       const y = m.t + ih - acc - h;
-      s += `<rect x="${cx}" y="${y}" width="${barW}" height="${h}" fill="${k.color}"><title>${r.date} ${k.label} ${fmtInt(v)}</title></rect>`;
+      s += `<rect x="${cx}" y="${y}" width="${barW}" height="${h}" style="fill:${k.color}"><title>${r.date} ${k.label} ${fmtInt(v)}</title></rect>`;
       acc += h;
     });
   });
@@ -251,23 +253,24 @@ function chartDonut(container, parts, centerTop, centerSub) {
   let off = 0;
   let s = `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
     <svg viewBox="0 0 132 132" width="132" height="132" style="flex:0 0 auto">`;
-  s += `<circle cx="66" cy="66" r="${R}" fill="none" stroke="#eef1f5" stroke-width="17"/>`;
+  s += `<circle class="chart-grid" cx="66" cy="66" r="${R}" fill="none" stroke-width="14"/>`;
   if (total > 0) {
     parts.forEach((p) => {
       if (!p.value) return;
       const len = (p.value / total) * C;
-      s += `<circle cx="66" cy="66" r="${R}" fill="none" stroke="${p.color}" stroke-width="17"
+      s += `<circle cx="66" cy="66" r="${R}" fill="none" stroke-width="14"
+        style="stroke:${p.color}"
         stroke-dasharray="${len - 1.5} ${C - len + 1.5}" stroke-dashoffset="${-off}"
         transform="rotate(-90 66 66)"><title>${esc(p.label)} ${fmtMoney(p.value)}</title></circle>`;
       off += len;
     });
   }
-  s += `<text x="66" y="62" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#14181f">${centerTop}</text>`;
-  s += `<text x="66" y="79" text-anchor="middle" style="font-size:11px">${esc(centerSub || '')}</text>`;
+  s += `<text x="66" y="62" text-anchor="middle" style="font-size:var(--text-ui-lg);font-weight:600;fill:currentColor">${centerTop}</text>`;
+  s += `<text x="66" y="79" text-anchor="middle" style="font-size:var(--text-ui-sm)">${esc(centerSub || '')}</text>`;
   s += '</svg><div style="flex:1 1 180px;min-width:170px">';
   parts.forEach((p) => {
     const share = total > 0 ? (p.value / total) * 100 : 0;
-    s += `<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12.5px">
+    s += `<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:var(--text-ui-caption)">
       <span><i style="display:inline-block;width:9px;height:9px;border-radius:3px;background:${p.color};margin-right:6px"></i>${esc(p.label)}</span>
       <span class="num">${fmtMoney(p.value)} <span class="muted">${share.toFixed(1)}%</span></span></div>`;
   });
@@ -275,17 +278,27 @@ function chartDonut(container, parts, centerTop, centerSub) {
   container.innerHTML = s;
 }
 
+// 热力图色阶对齐内置页的 --color-usage-heatmap-0..4：把 --accent 按 0/18/36/58%/82%
+// 的比例混进卡片底色，第 5 档换用更深的 --accent-fg。深浅主题各一条。
+const HEAT_RAMP = {
+  light: [[231, 231, 231], [200, 221, 244], [159, 201, 247], [108, 175, 250], [44, 127, 225]],
+  dark: [[38, 38, 38], [44, 66, 90], [49, 86, 129], [54, 109, 173], [108, 156, 207]],
+};
+
+function heatColor(v, max) {
+  const ramp = HEAT_RAMP[matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'];
+  if (!v) return `rgb(${ramp[0].join(',')})`;
+  const t = Math.pow(v / max, 0.6) * (ramp.length - 1);
+  const i = Math.min(Math.floor(t), ramp.length - 2);
+  const f = t - i;
+  const [a, b] = [ramp[i], ramp[i + 1]];
+  return `rgb(${a.map((x, k) => Math.round(x + (b[k] - x) * f)).join(',')})`;
+}
+
 function chartHeat(container, cells) {
   const map = new Map(cells.map((c) => [`${c.dow}-${c.hour}`, c]));
   const max = Math.max(1, ...cells.map((c) => c.requests));
-  const color = (v) => {
-    if (!v) return '#f2f4f7';
-    const t = Math.pow(v / max, 0.6);
-    const r = Math.round(232 - t * (232 - 47));
-    const g = Math.round(238 - t * (238 - 111));
-    const b = Math.round(245 - t * (245 - 235));
-    return `rgb(${r},${g},${b})`;
-  };
+  const color = (v) => heatColor(v, max);
   let s = '<div class="heat"><div class="lbl"></div>';
   for (let h = 0; h < 24; h++) s += `<div class="hlbl">${h % 3 === 0 ? h : ''}</div>`;
   for (let d = 0; d < 7; d++) {
@@ -337,7 +350,7 @@ function renderOverview() {
     kpiCard('折算费用', fmtMoney(k.cost), `${usdNote} · 按公开 API 单价逐条折算`, { small: true }),
     kpiCard('总 token', fmtTok(k.tokens), `新增 ${fmtTok(k.input_fresh)} · 缓存 ${fmtTok(k.cache_read)} · 输出 ${fmtTok(k.output)}`),
     kpiCard('缓存命中率', fmtPct(k.cache_hit_rate), `命中 ${fmtTok(k.cache_read)} / 计费输入 ${fmtTok(billed)}`, { small: true, bar: k.cache_hit_rate, barColor: COLORS.cache_read }),
-    kpiCard('错误率', fmtPct(k.error_rate), `错误 ${fmtInt(k.errors)} · 取消 ${fmtInt(k.cancelled)} · 重试 ${fmtInt(k.retries)}`, { small: true, bar: k.error_rate, barColor: '#e03131' }),
+    kpiCard('错误率', fmtPct(k.error_rate), `错误 ${fmtInt(k.errors)} · 取消 ${fmtInt(k.cancelled)} · 重试 ${fmtInt(k.retries)}`, { small: true, bar: k.error_rate, barColor: 'var(--err)' }),
     kpiCard('平均延迟', fmtMs(k.avg_ms), `P50 ${fmtMs(k.p50_ms)} · P95 ${fmtMs(k.p95_ms)}`, { small: true }),
     kpiCard('平均首字延迟', fmtMs(k.avg_ttft_ms), 'time to first token', { small: true }),
     kpiCard('模型数', fmtInt(k.models), `推理 token ${fmtTok(k.reasoning)}`, { small: true }),
@@ -379,7 +392,7 @@ function renderOverview() {
   })));
   el('ov-trend-legend').innerHTML =
     `<span><i style="background:${COLORS.req}"></i>请求数</span>
-     <span><i style="background:#e03131"></i>错误数</span>
+     <span><i style="background:var(--err)"></i>错误数</span>
      <span><i style="background:${COLORS.cost}"></i>费用（${curSym()}）</span>`;
 
   const mixParts = COST_LEGEND.map((c) => ({ label: c.label, color: c.color, value: k[c.key] || 0 }));
@@ -447,7 +460,7 @@ function renderModelTable() {
   const body = rows.map((r) => `<tr>
     <td class="l">${esc(r.key)}${r.price_source && r.price_source !== 'official'
       ? ` <span class="tag est">${r.price_source === 'assumed' ? '估算价' : '未定价'}</span>` : ''}
-      <div class="muted" style="font-size:11.5px">${esc(r.cost_rule || '')}</div></td>
+      <div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.cost_rule || '')}</div></td>
     ${MODEL_COLUMNS.slice(1).map((c) => `<td class="num">${c.fmt(r[c.key])}</td>`).join('')}
   </tr>`).join('');
   const totals = ['合计', state.summary.kpi.requests, state.summary.kpi.input_fresh,
@@ -486,12 +499,12 @@ function renderAnalytics() {
   hbarTable(el('an-agents'), s.by_agent.map((a) => ({
     label: a.key, value: a.cost, share: a.cost_share,
     title: `${a.requests} 次请求 · ${fmtTok(a.tokens)} token`,
-  })), { max: 8, barColor: '#0ea5a4' });
+  })), { max: 8, barColor: 'var(--c-cache)' });
 
   hbarTable(el('an-sources'), s.by_source.map((a) => ({
     label: a.key, value: a.cost, share: a.cost_share,
     title: `${a.requests} 次请求 · ${fmtTok(a.tokens)} token`,
-  })), { max: 8, barColor: '#f59e0b' });
+  })), { max: 8, barColor: 'var(--c-output)' });
 
   renderCacheCard();
   renderTopRequests();
@@ -526,7 +539,7 @@ function renderCacheCard() {
       ${kpiCard('若不命中', fmtMoney(cost + saved), `当前实际 ${fmtMoney(cost)}`, { small: true })}
       ${kpiCard('缓存写入', fmtTok(s.kpi.cache_write), 'cache write token', { small: true })}
     </div>
-    <p class="muted" style="font-size:12px;margin:10px 0 0">说明：DeepSeek 分时定价按高峰价估算节省额，未逐条区分高峰/低谷。</p>`;
+    <p class="muted" style="font-size:var(--text-ui-sm);margin:10px 0 0">说明：DeepSeek 分时定价按高峰价估算节省额，未逐条区分高峰/低谷。</p>`;
 }
 
 function renderTopRequests() {
@@ -592,7 +605,7 @@ function renderPriceTable() {
     <thead><tr><th class="l">规则</th><th class="l">名称</th><th class="l">币种</th>
       <th>输入</th><th>缓存读</th><th>缓存写</th><th>输出</th><th>命中请求</th><th class="l">备注</th></tr></thead>
     <tbody>${body}</tbody></table>
-    <p class="muted" style="font-size:12px;padding:10px 16px 14px">
+    <p class="muted" style="font-size:var(--text-ui-sm);padding:10px 16px 14px">
       单价单位：每 100 万 token。文件位置：<code>prices.json</code>，改完点“刷新”即可生效。</p></div>`;
 }
 
@@ -711,14 +724,14 @@ async function openDrawer(id) {
       ${row('单价规则', c.priced ? `${esc(c.label || '')} <span class="tag ${c.source === 'official' ? 'ok' : 'est'}">${c.source === 'official' ? '官方价' : '估算'}</span>` : '<span class="tag est">未定价</span>')}
       ${row('费用', `<b>${fmtMoney(c.total)}</b> <span class="muted">(${altMoney(c.total)})</span>`)}
       ${row('项目', esc(r.project_dir || '—'))}
-      ${row('会话', `${esc(r.session_title || '—')}<div class="muted" style="font-size:11.5px">${esc(r.session_id || '')}</div>`)}
+      ${row('会话', `${esc(r.session_title || '—')}<div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.session_id || '')}</div>`)}
       ${row('Agent / 来源', `${esc(r.agent || '—')} · ${esc(r.query_source || '')}`)}
       ${row('耗时 / 首字', `${fmtMs(r.duration_ms)} / ${fmtMs(r.ttft_ms)}`)}
       ${row('尝试 / 重试', `${r.attempt_index + 1} 次调用 · 重试 ${r.retry_count}`)}
       ${row('工具调用数', fmtInt(r.tool_call_count))}
-      ${row('turn / trace', `<span class="muted" style="font-size:11.5px">${esc(r.turn_id || '')}<br>${esc(r.trace_id || '')}</span>`)}
-      ${row('请求 ID', `<span class="muted" style="font-size:11.5px">${esc(d.logical_request_id || r.id)}</span>`)}
-      ${r.error_message ? row('错误', `<span style="color:#d92d20">${esc(r.error_type || '')} ${esc(r.error_code || '')}<br>${esc(r.error_message)}</span>`) : ''}
+      ${row('turn / trace', `<span class="muted" style="font-size:var(--text-ui-sm)">${esc(r.turn_id || '')}<br>${esc(r.trace_id || '')}</span>`)}
+      ${row('请求 ID', `<span class="muted" style="font-size:var(--text-ui-sm)">${esc(d.logical_request_id || r.id)}</span>`)}
+      ${r.error_message ? row('错误', `<span style="color:var(--err)">${esc(r.error_type || '')} ${esc(r.error_code || '')}<br>${esc(r.error_message)}</span>`) : ''}
     </dl>
     <p class="section-title">TOKEN 明细</p>
     <table class="data" style="margin-bottom:16px"><tbody>${tokenRows}</tbody></table>
