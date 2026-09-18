@@ -6,10 +6,16 @@
     zsage --app          弹出独立窗口（Chromium app 模式，无地址栏无标签，最接近"浮窗"）
     zsage --system       强制用系统默认浏览器打开（在 ZCode 终端里也用系统浏览器）
     zsage --open         即使已经有标签在看，也再打开一次
+    zsage -p PORT        指定端口（例如 zsage -p 9000）
     zsage --random-port  不优先默认端口，直接随机端口
+    zsage restart        重启服务（沿用当前端口；zsage restart -p 9000 可换端口）
     zsage stop           停掉服务
     zsage status         服务、端口、运行模式、几个标签在看、数据规模
     zsage doctor         体检：Python 版本 / 数据库 / 单价表 / 端口 / 浏览器 / shim
+    zsage sync-prices    从 models.dev 给未定价的模型补价格
+    zsage sync-fx        刷新当日 USD→CNY 汇率（折算展示币种用，每天自动过期）
+    zsage setup-auto-sync         设置每日自动同步（北京时间 8:00）
+    zsage setup-auto-sync --remove 移除自动同步任务
     zsage install        把 zsage 命令装到 PATH（Windows 可加 --autostart 开机自启服务）
     zsage uninstall      移除 shim 与开机自启（不动正在运行的服务）
 
@@ -43,10 +49,12 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 import ensure_running as er  # noqa: E402  复用幂等启动/停止逻辑
+import model_catalog as catalog  # noqa: E402  models.dev 目录抓取与匹配
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 DEFAULT_BIN_DIR = Path.home() / ".local" / "bin"
 PREFERRED_PORTS = (8787, 8788, 8789)
+PRICES_PATH = BASE_DIR / "prices.json"
 
 # app 模式窗口用的 Chromium 系浏览器（按顺序找第一个存在的）
 BROWSER_CANDIDATES = [
@@ -168,8 +176,8 @@ def summarize(url: str) -> str:
 # 默认动作：起服务 + 打开
 # --------------------------------------------------------------------------- #
 def cmd_default(force_system: bool, force_open: bool, random_port: bool,
-                app_window: bool = False) -> int:
-    code, runtime = er.ensure(random_port=random_port)
+                app_window: bool = False, port: int | None = None) -> int:
+    code, runtime = er.ensure(random_port=random_port, port=port)
     if code != 0 or not runtime:
         print("启动失败：服务没在 10 秒内就绪，检查 runtime.json 与端口占用", file=sys.stderr)
         return 1
@@ -447,9 +455,404 @@ def cmd_doctor() -> int:
 # --------------------------------------------------------------------------- #
 # 入口
 # --------------------------------------------------------------------------- #
+def _catalog_with_cache():
+    """优先联网拉最新的；失败就退回磁盘缓存（server 拉过的也在同一文件里）。
+
+    返回 (目录, 说明)。目录为 None 表示既没网也没缓存。目录 4.6MB、拉一次 8~10 秒，
+    联网抖动很常见，所以不做"拉不到就报错"，而是尽量给出一份可用的价格表。
+    """
+    import time
+
+    try:
+        data = catalog.fetch_catalog(timeout=120, user_agent=f"zsage/{__version__}")
+        catalog.write_cache(str(BASE_DIR), data, time.time())
+        return data, None
+    except Exception as exc:
+        data, ts = catalog.read_cache(str(BASE_DIR))
+        if not data:
+            return None, f"联网失败且本地没有缓存：{exc}"
+        age = (time.time() - ts) if ts else 0
+        hours = age / 3600
+        return data, f"models.dev 暂时不可达（{exc}），改用 {hours:.1f} 小时前的本地缓存"
+
+
+def _zcode_model_ids(db_path: str):
+    """取 ZCode 库里实际出现过的模型名与请求数，按请求数降序。"""
+    import sqlite3
+
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=8.0)
+    try:
+        con.execute("PRAGMA query_only=1")
+        return [
+            (r[0], r[1]) for r in con.execute(
+                "SELECT model_id, COUNT(*) AS n FROM model_usage"
+                " WHERE model_id IS NOT NULL GROUP BY model_id ORDER BY n DESC"
+            )
+        ]
+    finally:
+        con.close()
+
+
+def cmd_sync_prices(auto_mode: bool = False) -> int:
+    """从 models.dev 补齐价格。
+
+    只处理本地实际用到、且当前没有规则命中的模型；同名模型优先取官方 provider。
+    再次运行会刷新此前由本命令生成的规则（source=models.dev），
+    标为 official / assumed 的规则一律不动 —— 那些是你手工核对过的。
+    """
+    import fnmatch
+    import time
+
+    try:
+        with open(PRICES_PATH, encoding="utf-8") as fh:
+            config = json.load(fh)
+    except Exception as exc:
+        print(f"✗ 读不了 {PRICES_PATH}：{exc}", file=sys.stderr)
+        return 1
+
+    rules = config.setdefault("rules", [])
+    ignored = [p.lower() for p in config.get("ignored_models", [])]
+
+    db = os.environ.get("ZCODE_DB") or str(Path.home() / ".zcode" / "cli" / "db" / "db.sqlite")
+    if not Path(db).is_file():
+        print(f"✗ 找不到 ZCode 数据库：{db}", file=sys.stderr)
+        print("  用 ZCODE_DB 环境变量指定。", file=sys.stderr)
+        return 1
+
+    def rule_for(model_id: str):
+        name = (model_id or "").lower()
+        for r in rules:
+            if fnmatch.fnmatchcase(name, (r.get("match") or "*").lower()):
+                return r
+        return None
+
+    def alias_of(model_id: str) -> str:
+        entry = (config.get("models") or {}).get(model_id) or {}
+        return (entry.get("alias") or "").strip()
+
+    models = [
+        (mid, n) for mid, n in _zcode_model_ids(db)
+        if not any(fnmatch.fnmatchcase(mid.lower(), p) for p in ignored)
+    ]
+
+    if not auto_mode:
+        print(f"本地共 {len(models)} 个模型，正在拉取 models.dev 目录…")
+        print("（该站点时快时慢，慢的时候要几分钟；拉不动会自动改用本地缓存）")
+    cat, notice = _catalog_with_cache()
+    if cat is None:
+        print(f"✗ {notice}", file=sys.stderr)
+        return 1
+    if not auto_mode:
+        print(f"models.dev 带报价的模型 {len(cat)} 个")
+        if notice:
+            print(f"  ⚠ {notice}")
+
+    today = time.strftime("%Y-%m-%d")
+    added, refreshed, unresolved, already, stale = [], [], [], [], []
+
+    for mid, count in models:
+        existing = rule_for(mid)
+        # 手工规则（official / assumed）一律不碰
+        if existing is not None and existing.get("source") != "models.dev":
+            already.append((mid, count, existing))
+            continue
+
+        hit, how, used = catalog.match_with_alias(mid, alias_of(mid), cat)
+        if hit is None:
+            # 有旧规则就保留（这次没匹配上不代表要删），没有才算真的缺价
+            (stale if existing is not None else unresolved).append((mid, count))
+            continue
+
+        _pid, pname, model, _rank = hit
+        cost = model.get("cost") or {}
+        entry = {
+            "match": catalog.glob_safe(mid),
+            "label": model.get("name") or mid,
+            "currency": "USD",
+            "input": cost.get("input"),
+            "cache_read": cost.get("cache_read"),
+            "cache_write": cost.get("cache_write"),
+            "output": cost.get("output"),
+            "source": "models.dev",
+            "note": (f"models.dev {how}匹配：{pname} / {model.get('id')}"
+                     + (f"（用别名 {used} 查询）" if used != mid else "")
+                     + f"（同步于 {today}）"),
+        }
+        if existing is not None:
+            if all(existing.get(k) == entry[k] for k in ("input", "output", "cache_read", "cache_write")):
+                continue  # 价格没变，不写盘也不报
+            existing.clear()
+            existing.update(entry)
+            refreshed.append((mid, count, how, pname))
+        else:
+            rules.append(entry)
+            added.append((mid, count, how, pname))
+
+    changed = bool(added or refreshed)
+    if changed:
+        config["_last_sync"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        with open(PRICES_PATH, "w", encoding="utf-8") as fh:
+            json.dump(config, fh, ensure_ascii=False, indent=2)
+
+    if auto_mode:
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        tail = f"，仍缺 {len(unresolved)} 个" if unresolved else ""
+        print(f"[{stamp}] 价格同步：新增 {len(added)}、刷新 {len(refreshed)}{tail}")
+        _refresh_fx(f"[{stamp}] ")
+        return 0
+
+    print()
+    if added:
+        print(f"✓ 新增 {len(added)} 条规则（原来未定价）：")
+        for mid, count, how, pname in added:
+            print(f"    {mid}（{count} 次请求）  ←  {pname}  [{how}]")
+    if refreshed:
+        print(f"✓ 更新 {len(refreshed)} 条规则价格：")
+        for mid, count, how, pname in refreshed:
+            print(f"    {mid}（{count} 次请求）  ←  {pname}  [{how}]")
+    if not changed:
+        print("没有需要补价或更新的模型。")
+    if unresolved:
+        print(f"\n⚠ {len(unresolved)} 个模型在 models.dev 里找不到可用价格：")
+        for mid, count in unresolved:
+            print(f"    {mid}（{count} 次请求）")
+        print("  可在 prices.json 手工补一条，或启用 unknown_model_price 兜底。")
+    if stale:
+        print(f"\n{len(stale)} 个模型这次没匹配到，保留原有规则不动："
+              + "、".join(m for m, _ in stale))
+    if already:
+        print(f"\n已有 {len(already)} 个模型命中手工规则（不覆盖）：")
+        for mid, count, r in already[:8]:
+            print(f"    {mid:<28} {count:>5} 次  ←  {r.get('match')}  [{r.get('source')}]")
+        if len(already) > 8:
+            print(f"    …另有 {len(already) - 8} 个")
+    if changed:
+        print(f"\n已写入 {PRICES_PATH}（改完刷新页面即生效）")
+    # 顺带刷一下当日汇率：这个命令由每日定时任务在跑，汇率跟着一起保鲜，
+    # 免得服务端每次都要自己去拉（拉不到时会退回 prices.json 的兜底值）
+    print()
+    _refresh_fx()
+    return 0
+
+
+def _refresh_fx(prefix: str = "") -> bool:
+    """刷新当日汇率并打印一行结果；返回是否拉通。
+
+    每日同步（含 --auto）与服务端各走各的路，但都调这里，免得两处各写一份。
+    """
+    import fx_rate
+
+    got = fx_rate.refresh_now(str(BASE_DIR))
+    if got:
+        rate, source = got
+        print(f"{prefix}✓ 当日汇率：1 USD = {rate:.4f} CNY（{source}）")
+        return True
+    cached = fx_rate.read_cache(str(BASE_DIR))
+    stale = f"沿用缓存 {cached['date']}（{cached['source']}）" if cached else "沿用 prices.json 的兜底汇率"
+    print(f"{prefix}⚠ 汇率没拉到，{stale}", file=sys.stderr)
+    return False
+
+
+def cmd_sync_fx() -> int:
+    """刷新当日 USD→CNY 汇率。
+
+    汇率只用于把费用折算成展示币种（以及设置页参考列的比价），不参与费用本身的
+    计算；服务端读取时发现不是当天的会自己在后台拉，这个命令只是给
+    "网络当时不通、想手动再试一次" 留的口子。
+    """
+    return 0 if _refresh_fx() else 1
+
+
+def cmd_setup_auto_sync() -> int:
+    """设置每日自动同步价格的定时任务（北京时间 8:00）"""
+    import subprocess
+    
+    remove_mode = "--remove" in sys.argv
+    
+    # 获取脚本路径
+    auto_sync_script = BASE_DIR / "auto_sync_prices.py"
+    if not auto_sync_script.exists():
+        print(f"错误：找不到自动同步脚本：{auto_sync_script}", file=sys.stderr)
+        return 1
+    
+    if os.name == "nt":
+        # Windows: 使用任务计划程序
+        task_name = "zsage-auto-sync-prices"
+        
+        if remove_mode:
+            # 删除任务
+            result = subprocess.run(
+                ["schtasks", "/Delete", "/TN", task_name, "/F"],
+                capture_output=True,
+                text=True,
+                encoding='gbk',
+                errors='ignore'
+            )
+            if result.returncode == 0:
+                print(f"✓ 已移除自动同步任务：{task_name}")
+                return 0
+            else:
+                print(f"✗ 移除失败（任务可能不存在）", file=sys.stderr)
+                return 1
+        
+        # 创建任务
+        # 北京时间 8:00，Windows 任务计划使用本地时间
+        xml_content = f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2024-01-01T08:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions>
+    <Exec>
+      <Command>{sys.executable}</Command>
+      <Arguments>"{auto_sync_script}"</Arguments>
+      <WorkingDirectory>{BASE_DIR}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>"""
+        
+        # 写入临时 XML 文件
+        xml_path = BASE_DIR / "auto_sync_task.xml"
+        with open(xml_path, "w", encoding="utf-16") as f:
+            f.write(xml_content)
+        
+        try:
+            # 创建任务
+            result = subprocess.run(
+                ["schtasks", "/Create", "/TN", task_name, "/XML", str(xml_path), "/F"],
+                capture_output=True,
+                text=True,
+                encoding='gbk',
+                errors='ignore'
+            )
+            
+            if result.returncode == 0:
+                print(f"✓ 已创建自动同步任务：{task_name}")
+                print(f"  执行时间：每天 08:00（北京时间）")
+                print(f"  脚本路径：{auto_sync_script}")
+                print(f"\n  查看任务：schtasks /Query /TN {task_name} /V /FO LIST")
+                print(f"  手动运行：schtasks /Run /TN {task_name}")
+                print(f"  删除任务：zsage setup-auto-sync --remove")
+                return 0
+            else:
+                print(f"✗ 创建任务失败：{result.stderr}", file=sys.stderr)
+                return 1
+        finally:
+            # 清理临时文件
+            if xml_path.exists():
+                xml_path.unlink()
+    
+    else:
+        # Linux/macOS: 使用 cron
+        print("Linux/macOS 自动同步设置：")
+        print("\n请手动添加以下 cron 任务（每天北京时间 8:00）：")
+        print("\n1. 编辑 crontab：")
+        print("   crontab -e")
+        print("\n2. 添加以下行：")
+        # 北京时间 8:00 = UTC 0:00
+        print(f"   0 0 * * * {sys.executable} {auto_sync_script}")
+        print("\n3. 保存并退出")
+        print("\n注意：确保系统时区设置为 Asia/Shanghai，或调整 cron 时间")
+        
+        if remove_mode:
+            print("\n移除任务：编辑 crontab 并删除对应行")
+        
+        return 0
+
+
+def _parse_port(argv: list[str]):
+    """解析 -p/--port。返回 (端口, 是否合法)；未指定时端口为 None。"""
+    for i, arg in enumerate(argv):
+        if arg in ("-p", "--port") and i + 1 < len(argv):
+            try:
+                return int(argv[i + 1]), True
+            except ValueError:
+                print(f"端口必须是数字：{argv[i + 1]}", file=sys.stderr)
+                return None, False
+    return None, True
+
+
+def _wait_port_free(port: int, timeout: float = 3.0) -> None:
+    """taskkill 是异步的，端口未必立刻释放。短暂等待，免得新进程 bind 失败。"""
+    import socket
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", port))
+            return
+        except OSError:
+            time.sleep(0.15)
+        finally:
+            probe.close()
+
+
+def cmd_restart(port: int | None = None) -> int:
+    """重启服务：默认沿用当前端口，`-p` 可换一个。不会自动弹浏览器。"""
+    old = er.read_runtime()
+    old_port = (old or {}).get("port")
+    if old_port:
+        er.stop()
+        print(f"已停止旧服务（pid {(old or {}).get('pid')}，端口 {old_port}）")
+        _wait_port_free(old_port)
+
+    code, runtime = er.ensure(port=port if port is not None else old_port)
+    if code != 0 or not runtime:
+        print("重启失败：服务没在 10 秒内就绪，检查 runtime.json 与端口占用", file=sys.stderr)
+        return 1
+    print(f"已重启：{runtime['url']}")
+    extra = summarize(runtime["url"])
+    if extra:
+        print(f"数据：{extra}")
+    return 0
+
+
+# 所有已识别的子命令。写成常量是为了让拼错的命令报错，而不是静默走默认分支
+KNOWN_ACTIONS = (
+    "stop", "停", "status", "状态", "doctor", "restart", "重启",
+    "sync-prices", "sync-fx", "setup-auto-sync", "install", "uninstall", "help",
+)
+
+
 def main() -> int:
     argv = sys.argv[1:]
     action = argv[0].lower() if argv and not argv[0].startswith("-") else ""
+    port, port_ok = _parse_port(argv)
+    if not port_ok:
+        return 1
 
     if action in ("stop", "停"):
         code, runtime = er.stop()
@@ -457,23 +860,36 @@ def main() -> int:
                2: "没有正在运行的实例",
                3: "进程可能已经不在了，已清理状态文件"}.get(code, "停止失败"))
         return code
+    if action in ("restart", "重启"):
+        return cmd_restart(port)
     if action in ("status", "状态"):
         return cmd_status()
     if action == "doctor":
         return cmd_doctor()
+    if action == "sync-prices":
+        return cmd_sync_prices(auto_mode="--auto" in argv)
+    if action == "sync-fx":
+        return cmd_sync_fx()
+    if action == "setup-auto-sync":
+        return cmd_setup_auto_sync()
     if action == "install":
         return cmd_install(autostart="--autostart" in argv, bin_dir=None)
     if action == "uninstall":
         return cmd_uninstall()
-    if action in ("help", "-h", "--help"):
+    if action == "help" or any(a in ("-h", "--help") for a in argv):
         print(__doc__)
         return 0
+    if action and action not in KNOWN_ACTIONS:
+        print(f"未知命令：{action}", file=sys.stderr)
+        print("用 `zsage help` 看可用命令。", file=sys.stderr)
+        return 1
 
     return cmd_default(
         force_system=("--system" in argv),
         force_open=("--open" in argv),
         random_port=("--random-port" in argv),
         app_window=("--app" in argv),
+        port=port,
     )
 
 

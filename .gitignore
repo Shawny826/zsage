@@ -1,5 +1,7 @@
 # 运行时产物（不入库）
 runtime.json
+models_dev_cache.json
+fx_rate_cache.json
 __pycache__/
 *.py[cod]
 *.log

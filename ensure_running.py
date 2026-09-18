@@ -48,6 +48,75 @@ def pick_port():
     return 0  # 交给操作系统挑一个空闲端口
 
 
+def _listeners_on(port):
+    """列出正在 LISTEN 该端口的 pid。取不到就返回空列表（只做尽力而为的清理）。"""
+    import subprocess
+
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
+                                 text=True, encoding="gbk", errors="ignore").stdout
+            pids = []
+            for line in out.splitlines():
+                parts = line.split()
+                if (len(parts) >= 5 and parts[0].upper() == "TCP"
+                        and parts[3].upper() == "LISTENING"
+                        and parts[1].endswith(":" + str(port))):
+                    pids.append(parts[4])
+            return pids
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                             capture_output=True, text=True).stdout
+        return [p for p in out.split() if p.strip()]
+    except Exception:
+        return []
+
+
+def _cmdline_of(pid):
+    import subprocess
+
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine",
+                 "/format:list"],
+                capture_output=True, text=True, encoding="gbk", errors="ignore").stdout
+            return out
+        with open(f"/proc/{pid}/cmdline", encoding="utf-8", errors="ignore") as fh:
+            return fh.read().replace("\0", " ")
+    except Exception:
+        return ""
+
+
+def reclaim_stale_listeners(keep_pid=None):
+    """收掉占着优先端口的旧实例。
+
+    Windows 的 SO_REUSEADDR 允许第二个进程静默绑上已占端口（不报错、也收不到请求），
+    于是同端口会堆好几个僵尸服务，启动检测永远失败。这里按"命令行指向本目录的
+    server.py"精确识别，只清理自己的残留 —— 别的目录里的 zsage 实例不动。
+    返回 [(port, pid), ...]。
+    """
+    import subprocess
+
+    reclaimed = []
+    for port in PREFERRED_PORTS:
+        for pid in _listeners_on(port):
+            if keep_pid is not None and str(pid) == str(keep_pid):
+                continue
+            cmd = _cmdline_of(pid)
+            if "server.py" not in cmd or BASE_DIR not in cmd:
+                continue
+            try:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                                   capture_output=True, timeout=15)
+                else:
+                    os.kill(int(pid), 9)
+                reclaimed.append((port, pid))
+            except Exception:
+                pass
+    return reclaimed
+
+
 def read_runtime():
     try:
         with open(RUNTIME_PATH, encoding="utf-8") as fh:
@@ -75,7 +144,7 @@ def clear_runtime():
 
 
 def ensure(open_system_browser: bool = False, auto_shutdown: bool = False,
-           random_port: bool = False):
+           random_port: bool = False, port: int | None = None):
     runtime = read_runtime()
     if probe(runtime):
         if open_system_browser:
@@ -85,7 +154,22 @@ def ensure(open_system_browser: bool = False, auto_shutdown: bool = False,
         return 0, runtime
     clear_runtime()  # 陈旧状态（上次异常退出留下的）直接清掉
 
-    server_args = [sys.executable, SERVER, "--port", str(0 if random_port else pick_port())]
+    # 端口上可能压着同目录的僵尸实例（Windows 静默双绑定所致），先收掉再挑端口，
+    # 否则新进程会"绑上但收不到请求"，表现得像启动失败。
+    if port is None and not random_port:
+        stale = reclaim_stale_listeners()
+        for port_no, pid in stale:
+            print(f"清理了端口 {port_no} 上的旧实例（pid {pid}）", file=sys.stderr)
+
+    # 端口选择优先级：指定端口 > 随机 > 默认端口池
+    if port is not None:
+        actual_port = port
+    elif random_port:
+        actual_port = 0
+    else:
+        actual_port = pick_port()
+
+    server_args = [sys.executable, SERVER, "--port", str(actual_port)]
     if auto_shutdown:
         # 默认常驻（关掉标签也继续跑，下次 zsage 秒开）；这个开关恢复"没人看就退出"
         server_args.append("--auto-shutdown")

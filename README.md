@@ -11,8 +11,11 @@
 ## 特性
 
 - **一条命令**：`zsage` 自动挑空闲端口起服务、常驻后台、把看板送到你手上
+- **端口灵活配置**：`-p PORT` 指定端口，或自动选择 8787/8788/8789，支持随机端口
 - **三种打开方式**：系统默认浏览器（全自动）/ Chromium 独立窗口（全自动，最接近"浮窗"）/ ZCode 内置面板（点一下输出的链接）
 - **实时费用折算**：按公开 API 单价逐条计算，支持缓存命中差价、DeepSeek 高峰/低谷分时定价
+- **价格自动同步**：`zsage sync-prices` 从 models.dev 给你实际用到却没定价的模型补价格，支持近似匹配
+- **灵活过滤**：忽略指定模型（如测试/调试模型）、为未知模型配置默认价格
 - **常驻 + 秒开**：服务关掉标签不退出；数据每次请求现读数据库，没有"刷新"问题
 - **三个视图**：概览（KPI/趋势/费用构成）、分析（模型/项目/Agent/时段热力图/缓存效率）、请求事件（逐条下钻 + CSV 导出）
 - **自安装**：`zsage install` 把命令装进 PATH，可选开机自启
@@ -32,14 +35,20 @@ zsage                          # 任意路径、任意终端，起服务并打�
 
 ```bash
 zsage            # 服务没跑就起（常驻），页面没开就打开，已经开着就只报一句状态
+zsage -p 9000    # 指定端口启动（例如 9000）
 zsage --app      # 弹出独立窗口（Chromium app 模式，无地址栏无标签）
 zsage --system   # 强制用系统默认浏览器打开
 zsage status     # 服务/端口/模式/几个标签在看/数据规模
+zsage restart    # 重启服务，沿用当前端口（restart -p 9000 可顺带换端口）
 zsage stop       # 停掉服务
+zsage sync-prices      # 从 models.dev 给未定价的模型补价格
+zsage setup-auto-sync  # 配置每天北京时间 08:00 自动同步（--remove 移除）
 zsage doctor     # 体检：Python / 数据库 / 单价表 / 端口 / 浏览器 / 安装状态
 zsage install --autostart   # 顺带配置开机自启（仅拉起常驻服务，不弹窗）
 zsage uninstall  # 移除命令入口与自启
 ```
+
+命令拼错时会直接报错并提示 `zsage help`，不会静默退化成"启动服务"。
 
 在 **ZCode 集成终端**里运行时，输出的看板地址是一个可点击的超链接，
 点一下就在 ZCode 内置浏览器面板打开（详见[下文](#zcode-集成的边界)）。
@@ -55,6 +64,8 @@ zsage uninstall  # 移除命令入口与自启
 **请求事件**：逐条列表（可按费用/token/耗时/首字延迟排序、可翻页），点任意一行看详情：
 token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/trace/session。
 支持按当前筛选导出 CSV。
+
+**设置**：逐模型管理价格与统计口径，见[下文](#设置逐模型的价格与统计口径)。
 
 过滤器覆盖：时间范围、模型、Provider、项目、Agent、来源（main_turn / subagent / compact / session_title）、
 状态、是否已定价、关键字。
@@ -74,17 +85,45 @@ token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/t
 单价表是 [`prices.json`](prices.json)，改完**刷新页面即生效**（不用重启服务）：
 
 - `match` 支持 `*` 通配、大小写不敏感，按数组顺序首次命中生效（例外规则写在前面）
-- `currency` 每条规则可写 CNY 或 USD，汇总按 `usd_to_cny` 换算成 `display_currency`
+- `currency` 每条规则可写 CNY 或 USD，汇总时按**当日汇率**换算成 `display_currency`
+  （仓库里预置的规则已统一为 USD，`display_currency` 也是 USD；要改回人民币只需把
+  `display_currency` 设成 `CNY`，规则不必动，折算会自动进行）
+- **汇率自动保鲜**：服务端读取时发现手上的汇率不是当天的，会在后台重新拉一次
+  （`open.er-api.com` 优先，`frankfurter.dev`（ECB）兜底），拉取不阻塞任何接口。
+  结果落在 `fx_rate_cache.json`（已 gitignore），跨天自动重拉。
+  `zsage sync-prices`（每日定时任务）会顺带刷新；网络不通时可手动 `zsage sync-fx`。
+  `prices.json` 里的 `usd_to_cny` 只是**离线兜底**，不再需要手工维护 —— 界面上也不显示
+  汇率数字（一个写死的数字只会让人怀疑费用算错了），只说明"按当日汇率折算"。
+  注意汇率只影响**折算展示**与设置页参考列的比价，**不参与费用本身的计算**：
+  规则币种与展示币种一致时它是恒等变换。
 - `source: "official"` = 厂商公开价目；`"assumed"` = 估算（UI 会打「估算」标签提醒你核对）
 - `peak` 支持分时定价（如 DeepSeek 高峰 $0.30/$0.006/$1.20、低谷减半、窗口 01:00–04:00 与 06:00–10:00 UTC 工作日）
+- **`ignored_models`** 忽略列表：匹配到的模型请求不会计入统计和费用（支持通配符）
+  ```json
+  "ignored_models": ["*test*", "*debug*", "o1-mini"]
+  ```
+- **`unknown_model_price`** 未知模型默认价格：启用后对所有未匹配规则的模型生效
+  ```json
+  "unknown_model_price": {
+    "enabled": true,
+    "currency": "USD",
+    "input": 1.0,
+    "output": 3.0,
+    "note": "未知模型的默认价格"
+  }
+  ```
 
 已核对的官方价源：GLM（Z.ai）、DeepSeek、Kimi。Claude / GPT / Gemini / Grok 的官网在不同网络环境下
 可能取不到，仓库里预填的是同族公开价的估算值，请按需修改。
 
+**自动同步价格**：`zsage sync-prices` 从 [models.dev](https://models.dev) 给你**实际用到但还没定价**的模型补价格。
+它不会导入整个目录（全库 7800+ 个模型），也不会覆盖你手工核对过的规则。详见[价格自动同步](#价格自动同步)。
+
 ## 生命周期与端口
 
 - **端口自动分配**：优先 8787 → 8788 → 8789（稳定端口让面板标签可以长期复用），都被占用则随机；
-  `--random-port` 可强制随机。实际地址写在 `runtime.json`（服务以它为准，`pythonw` 场景没有标准输出）。
+  `-p PORT` 可指定端口（如 `zsage -p 9000`），`--random-port` 可强制随机。
+  实际地址写在 `runtime.json`（服务以它为准，`pythonw` 场景没有标准输出）。
 - **默认常驻**：关掉标签页服务继续跑，下次秒开。想恢复"没人看就退出"，用
   `python ensure_running.py --auto-shutdown` 起（页面每 4 秒心跳，全关后约 5~12 秒退出）。
 - **开机自启**：`zsage install --autostart` 只拉起常驻服务、不弹窗；配合面板标签的工作区恢复机制，
@@ -96,8 +135,11 @@ token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/t
 |---|---|
 | `ZCODE_DB` | 覆盖数据库路径（默认 `~/.zcode/cli/db/db.sqlite`，或 `--db` 参数） |
 | `ZSAGE_BIN_DIR` | 覆盖 `install` 的 shim 目录（默认 `~/.local/bin`） |
-| `--port N` / `--random-port` | 固定端口 / 随机端口（服务本体 `server.py`） |
+| `-p PORT` / `--port PORT` | 固定端口（如 `zsage -p 9000`） |
+| `--random-port` | 随机端口 |
 | `prices.json` | 单价表，热加载 |
+| `prices.json: ignored_models` | 忽略列表，支持通配符（如 `["*test*", "*debug*"]`） |
+| `prices.json: unknown_model_price` | 未知模型默认价格配置 |
 
 ## ZCode 集成的边界
 
@@ -124,6 +166,129 @@ token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/t
 - 不写入、不修改 ZCode 的任何文件；不联网（单价表本地热加载）
 - ZCode 侧的 `model_usage` 只保留**最近 30 天**（滚动窗口），看板展示范围随之受限；
   需要长期账单请定期用"导出 CSV"归档
+
+## 价格自动同步
+
+zsage 支持从 [Models.dev](https://models.dev) 自动同步最新模型价格：
+
+```bash
+# 手动同步价格
+zsage sync-prices
+
+# 设置每日自动同步（北京时间 8:00）
+zsage setup-auto-sync
+
+# 查看任务状态（Windows）
+cmd /c "schtasks /Query /TN zsage-auto-sync-prices /FO LIST"
+
+# 手动触发任务（Windows）
+cmd /c "schtasks /Run /TN zsage-auto-sync-prices"
+
+# 移除自动同步
+zsage setup-auto-sync --remove
+```
+
+同步规则：
+
+- 数据源是 [models.dev](https://models.dev) 的 `api.json`（约 7800 个模型，其中 2700 个带报价）
+- **只处理你实际用到、且当前没有规则命中的模型**，不会把整个目录倒进 `prices.json`
+- 匹配分三级：模型名精确 → 一方包含另一方 → 模糊相似度（difflib ≥ 0.82）。
+  第三级就是"未识别模型走近似匹配"：命中的 provider 与原始模型名会写进规则的 `note` 里，方便你核对
+- **查价用「别名优先、原名兜底」**：你在设置页填的别名（通常是官方名）会优先拿去查，
+  查不到再退回记录到的原名。记录名多是网关侧的变体（`claude-opus-5-kiro`、`GLM-5.3-1M`），
+  照原样查只能靠宽匹配。别名优先让这些变体直接精确命中
+- 同名模型被多家 provider 收录时**优先取官方**（anthropic / openai / google / zhipuai / deepseek…），
+  避免拿到 AIHubMix、Vivgrid 这类转售商的价格
+- 标为 `official` / `assumed` 的规则是你手工核对的，**永不覆盖**；只有本命令自己生成的
+  （`source: "models.dev"`）会在再次运行时刷新价格
+- 找不到价格的模型会被明确列出来，可手动补规则，或靠 `unknown_model_price` 兜底
+- 重复运行是幂等的：没有变化就不写文件
+
+Windows 用任务计划程序实现（任务名 `zsage-auto-sync-prices`），Linux/macOS 需手动配置 cron。
+
+## 忽略特定模型
+
+在 `prices.json` 中配置 `ignored_models` 可以排除不想统计的模型（也可在设置页里改）：
+
+```json
+{
+  "ignored_models": [
+    "*test*",
+    "*debug*", 
+    "o1-mini"
+  ]
+}
+```
+
+支持通配符匹配，被忽略的模型请求不计入统计和费用计算。
+
+## 未知模型默认价格
+
+为所有未匹配到价格规则的模型设置默认价格：
+
+```json
+{
+  "unknown_model_price": {
+    "enabled": true,
+    "currency": "USD",
+    "input": 1.0,
+    "cache_read": 0.1,
+    "cache_write": 1.0,
+    "output": 3.0,
+    "note": "未知模型的默认价格"
+  }
+}
+```
+
+设置 `enabled: false` 可禁用此功能。
+
+## 设置：逐模型的价格与统计口径
+
+「设置」标签页把 ZCode 记录到的每个模型列成一张可编辑的表格。之所以需要它，
+是因为**记录下来的模型名经常和官方名对不上**（同一个模型可能以 `glm-5.3-flash`、
+`GLM-5.3-Flash`、`GLM-5.3-1M` 三种名字出现；`claude-opus-5` 还有 `claude-opus-5-kiro`、
+`kiro/claude-opus-5` 两个变体），而且官方价目和你手上的估算值可能差很多。
+
+表格每行包含：
+
+| 列 | 说明 |
+|---|---|
+| 启用 | 勾选才计入统计。**匹配不到价格的模型默认不勾选** |
+| 记录的模型名 | ZCode 实际记录的原名，只读 |
+| 别名 | 可编辑。**多行填同一个别名会被合并成一行统计** |
+| 输入 / 缓存读 / 缓存写 / 输出 | 可编辑的价格，单位是每百万 token |
+| 币种 | USD / CNY（预置规则已统一为 USD） |
+| 价格来源 | 规则（哪条规则命中）／ 手填 ／ 未匹配 |
+| models.dev 参考 | 自动匹配到的官方名、provider、匹配方式与价格，可一键「采用」 |
+
+几个设计取舍：
+
+- **价格与规则一致时不写盘**：那一行继续跟随 `prices.json` 里的规则，
+  以后你改规则它会跟着变；只有你改过（或压根没有规则可跟）才钉成手动价。
+- **别名做归组**：合并后的行在「分析 → 模型明细」里显示为一行，
+  原始记录名仍可在接口的 `model_ids` 里查到。
+- **默认勾选规则**：能匹配到规则、或能在 models.dev 匹配到价格的模型默认勾选；
+  两者都匹配不到的默认不勾选（可在表格里手动勾上）。
+- `ignored_models` 是比"取消勾选"更彻底的做法：命中的模型完全不出现在看板里，
+  包括下拉框和导出。设置页底部也能直接编辑这个列表 —— 已选项是可删除的标签，
+  新增项从**已记录模型名的下拉列表**里挑，也允许直接敲通配符。
+
+改动保存后会写回 `prices.json` 的 `models` 段，形如：
+
+```json
+"models": {
+  "glm-5.3-flash": {
+    "alias": "GLM-5.3-Flash",
+    "enabled": true,
+    "matched": {"id": "glm-5.3-flash", "provider": "Zhipu AI", "how": "精确"}
+  },
+  "claude-opus-5-kiro": {
+    "enabled": true,
+    "price": {"currency": "USD", "input": 5, "cache_read": 0.5, "cache_write": 6.25, "output": 25}
+  },
+  "test-dsf": {"enabled": false}
+}
+```
 
 ## 排错
 

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ZCode 用量看板</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23000'/%3E%3Ctext x='16' y='23' font-family='system-ui,sans-serif' font-size='19' font-weight='600' fill='%23fff' text-anchor='middle'%3EZ%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -30,6 +31,7 @@
   <button data-tab="overview" class="active">概览</button>
   <button data-tab="analytics">分析</button>
   <button data-tab="events">请求事件</button>
+  <button data-tab="settings">设置</button>
 </nav>
 
 <section class="filters" id="filters">
@@ -62,6 +64,10 @@
     <div class="stack">
       <div class="kpis" id="ov-kpis"></div>
       <div id="ov-notice"></div>
+      <div class="card" id="ov-price-card">
+        <header><h2>价格配置</h2><span class="hint">忽略列表 / 未知模型兜底价，改 prices.json 后刷新即生效</span></header>
+        <div class="body tight"><div id="ov-price-config"></div></div>
+      </div>
       <div class="grid cols-2">
         <div class="card">
           <header><h2>每日请求量与费用</h2><span class="hint">柱=请求数，线=费用</span></header>
@@ -120,6 +126,37 @@
         <header><h2>请求事件</h2><span class="hint" id="ev-hint"></span></header>
         <div class="body tight"><div id="ev-table"></div></div>
         <div class="pager" id="ev-pager"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-settings" class="tab-panel hidden">
+    <div class="stack">
+      <div class="card">
+        <header>
+          <h2>模型设置</h2>
+          <span class="hint" id="st-hint">勾选的模型才计入统计；改完记得保存</span>
+        </header>
+        <div class="body">
+          <div class="st-toolbar">
+            <button id="st-save" class="primary">保存</button>
+            <button id="st-match">重新匹配 models.dev</button>
+            <span class="sep"></span>
+            <button id="st-check-matched">勾选已匹配</button>
+            <button id="st-uncheck-unmatched">取消未匹配</button>
+            <span class="sep"></span>
+            <input type="text" id="st-filter" placeholder="筛选模型名 / 别名 / 官方名">
+            <span class="spacer"></span>
+            <span id="st-status" class="muted"></span>
+          </div>
+          <p class="muted st-note" id="st-note"></p>
+        </div>
+        <div class="body tight"><div id="st-table"></div></div>
+      </div>
+      <div class="card">
+        <header><h2>忽略列表（ignored_models）</h2>
+          <span class="hint">这里命中的模型完全不出现在看板里，是比取消勾选更彻底的做法</span></header>
+        <div class="body"><div id="st-ignored"></div></div>
       </div>
     </div>
   </div>

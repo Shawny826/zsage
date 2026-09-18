@@ -30,11 +30,14 @@ function fmtMoney(v) {
   return curSym() + v.toFixed(d);
 }
 
-function fmtUSD(v) {
-  const rate = state.bootstrap?.pricing?.usd_to_cny || 7.1;
-  const c = state.bootstrap?.pricing?.display_currency || 'CNY';
-  const usd = c === 'USD' ? v : v / rate;
-  return '$' + (usd >= 100 ? usd.toFixed(0) : usd >= 1 ? usd.toFixed(2) : usd.toFixed(4));
+/** 副币种：主展示是 CNY 就折算成 USD，反之折算成 CNY。两边都不能再显示同一个符号。 */
+function altMoney(v) {
+  const price = state.bootstrap?.pricing || {};
+  const rate = price.usd_to_cny || 7.1;
+  const isUSD = (price.display_currency || 'CNY') === 'USD';
+  const alt = isUSD ? v * rate : v / rate;
+  const sym = isUSD ? '¥' : '$';
+  return sym + (alt >= 100 ? alt.toFixed(0) : alt >= 1 ? alt.toFixed(2) : alt.toFixed(4));
 }
 
 function fmtMs(ms) {
@@ -74,10 +77,55 @@ const STATUS_TAG = {
   running: '<span class="tag run">进行中</span>',
 };
 
+/* 价格来源 → 标签。
+ * 「未定价」只表示"确实没匹配到任何价"；模糊匹配、models.dev 目录、手填、
+ * 兜底价都算已经有价，各有各的说法，不能一律叫未定价。
+ * 服务端 cost.source / summary.price_source 取值：manual | fallback |
+ * official | assumed | models.dev | rule:<上面之一>。 */
+const PRICE_TAGS = {
+  manual: { label: '手填', cls: 'ok' },          // 设置页填的 / 点「采用」来的
+  'models.dev': { label: '目录价', cls: 'mut' }, // 从 models.dev 同步来的，可能是转售商价格
+  assumed: { label: '估算价', cls: 'est' },      // 仓库里按同族价估的
+  fallback: { label: '兜底价', cls: 'est' },     // unknown_model_price
+  unpriced: { label: '未定价', cls: 'est' },     // 确实没匹配到任何价
+};
+
+/** 返回 { label, cls }；返回 null 表示"官方价、不挂标签"（它是基准情况）。 */
+function priceTag(src) {
+  const key = String(src ?? '').replace(/^rule:/, '').replace(/^model:/, '');
+  if (!key) return PRICE_TAGS.unpriced;
+  if (key === 'official') return null;
+  // 认不出来源就把来源名照实显示，别谎报成"未定价"
+  return PRICE_TAGS[key] || { label: key, cls: 'est' };
+}
+
+/** 模型费用类表格（概览的费用占比、分析页的模型明细）用的价格标签。
+ *
+ *  这些表里标签是「提示」，不是「状态」：只在需要你动手时才挂 ——
+ *  没价的（未定价，费用会算成 0）和估算的（按同族价猜的，要你核对）。
+ *  官方价 / 手填 / models.dev 目录价都是能直接用的价，一律不挂，
+ *  否则一列里全是徽章，真正要处理的那行反而看不见了。
+ *
+ *  想连"估算价"也不显示的话，把下面 assumed / fallback 那行删掉即可。
+ */
+function priceAlertTag(src) {
+  const key = String(src ?? '').replace(/^rule:/, '').replace(/^model:/, '');
+  if (!key) return PRICE_TAGS.unpriced;
+  if (key === 'assumed' || key === 'fallback') return PRICE_TAGS[key];
+  return null;
+}
+
+function priceAlertTagHTML(src) {
+  const t = priceAlertTag(src);
+  return t ? ` <span class="tag ${t.cls}">${t.label}</span>` : '';
+}
+
 const DOW = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+// 取 ZCode 内置页的图表色（--color-usage-chart-1..6），并交给 CSS 变量，
+// 这样浅色/深色主题切换时不用重新渲染。只在 style 属性里用（var() 在 SVG 表现属性里无效）。
 const COLORS = {
-  input: '#4c8dff', cache_read: '#9db4f7', cache_write: '#c4a6f5',
-  output: '#fb923c', cost: '#7c3aed', req: '#93b4f0', accent: '#2f6feb',
+  input: 'var(--c-input)', cache_read: 'var(--c-cache)', cache_write: 'var(--c-write)',
+  output: 'var(--c-output)', cost: 'var(--c-cost)', req: 'var(--c-req)', accent: 'var(--accent)',
 };
 const TOKEN_LEGEND = [
   { key: 'input_fresh', label: '新增输入', color: COLORS.input },
@@ -104,6 +152,11 @@ const state = {
   events: null,
   eventSort: { key: 'started_at', order: 'desc' },
   modelSort: { key: 'cost', order: 'desc' },
+  facetSig: null,
+  models: null,
+  modelEdits: {},
+  stFilter: '',
+  ignoredDraft: null,
   page: 1,
   size: 100,
   drawerId: null,
@@ -172,22 +225,22 @@ function chartBarsLine(container, rows) {
   let s = svgOpen(W, H);
   for (let i = 0; i <= 4; i++) {
     const y = m.t + (ih / 4) * i;
-    s += `<line x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}" stroke="#eef1f4" stroke-width="1"/>`;
+    s += `<line class="chart-grid" x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}"/>`;
     s += `<text x="${m.l - 8}" y="${y + 3}" text-anchor="end">${fmtTok(maxBar * (4 - i) / 4)}</text>`;
     s += `<text x="${m.l + iw + 8}" y="${y + 3}" text-anchor="start">${fmtMoney(maxLine * (4 - i) / 4)}</text>`;
   }
   rows.forEach((r, i) => {
     const y = yBar(r.requests);
-    s += `<rect x="${x(i) - barW / 2}" y="${y}" width="${barW}" height="${m.t + ih - y}" fill="${COLORS.req}" rx="2"/>`;
+    s += `<rect x="${x(i) - barW / 2}" y="${y}" width="${barW}" height="${m.t + ih - y}" style="fill:${COLORS.req}" rx="2"/>`;
     if (r.errors) {
       const ey = yBar(r.errors);
-      s += `<rect x="${x(i) - barW / 2}" y="${ey}" width="${barW}" height="${m.t + ih - ey}" fill="#e03131" rx="2"/>`;
+      s += `<rect x="${x(i) - barW / 2}" y="${ey}" width="${barW}" height="${m.t + ih - ey}" style="fill:var(--err)" rx="2"/>`;
     }
   });
   const pts = rows.map((r, i) => `${x(i)},${yLine(r.cost)}`).join(' ');
-  s += `<polyline points="${pts}" fill="none" stroke="${COLORS.cost}" stroke-width="2" stroke-linejoin="round"/>`;
+  s += `<polyline points="${pts}" fill="none" style="stroke:${COLORS.cost}" stroke-width="2" stroke-linejoin="round"/>`;
   rows.forEach((r, i) => {
-    s += `<circle cx="${x(i)}" cy="${yLine(r.cost)}" r="2.5" fill="#fff" stroke="${COLORS.cost}" stroke-width="1.6"/>`;
+    s += `<circle cx="${x(i)}" cy="${yLine(r.cost)}" r="2.5" style="fill:var(--panel);stroke:${COLORS.cost}" stroke-width="1.6"/>`;
   });
   const step = Math.ceil(rows.length / 12);
   rows.forEach((r, i) => {
@@ -214,7 +267,7 @@ function chartStacked(container, rows, series) {
   let s = svgOpen(W, H);
   for (let i = 0; i <= 4; i++) {
     const y = m.t + (ih / 4) * i;
-    s += `<line x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}" stroke="#eef1f4"/>`;
+    s += `<line class="chart-grid" x1="${m.l}" y1="${y}" x2="${m.l + iw}" y2="${y}"/>`;
     s += `<text x="${m.l - 8}" y="${y + 3}" text-anchor="end">${fmtTok(maxV * (4 - i) / 4)}</text>`;
   }
   rows.forEach((r, i) => {
@@ -225,7 +278,7 @@ function chartStacked(container, rows, series) {
       if (!v) return;
       const h = (v / maxV) * ih;
       const y = m.t + ih - acc - h;
-      s += `<rect x="${cx}" y="${y}" width="${barW}" height="${h}" fill="${k.color}"><title>${r.date} ${k.label} ${fmtInt(v)}</title></rect>`;
+      s += `<rect x="${cx}" y="${y}" width="${barW}" height="${h}" style="fill:${k.color}"><title>${r.date} ${k.label} ${fmtInt(v)}</title></rect>`;
       acc += h;
     });
   });
@@ -243,23 +296,24 @@ function chartDonut(container, parts, centerTop, centerSub) {
   let off = 0;
   let s = `<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
     <svg viewBox="0 0 132 132" width="132" height="132" style="flex:0 0 auto">`;
-  s += `<circle cx="66" cy="66" r="${R}" fill="none" stroke="#eef1f5" stroke-width="17"/>`;
+  s += `<circle class="chart-grid" cx="66" cy="66" r="${R}" fill="none" stroke-width="14"/>`;
   if (total > 0) {
     parts.forEach((p) => {
       if (!p.value) return;
       const len = (p.value / total) * C;
-      s += `<circle cx="66" cy="66" r="${R}" fill="none" stroke="${p.color}" stroke-width="17"
+      s += `<circle cx="66" cy="66" r="${R}" fill="none" stroke-width="14"
+        style="stroke:${p.color}"
         stroke-dasharray="${len - 1.5} ${C - len + 1.5}" stroke-dashoffset="${-off}"
         transform="rotate(-90 66 66)"><title>${esc(p.label)} ${fmtMoney(p.value)}</title></circle>`;
       off += len;
     });
   }
-  s += `<text x="66" y="62" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#14181f">${centerTop}</text>`;
-  s += `<text x="66" y="79" text-anchor="middle" style="font-size:11px">${esc(centerSub || '')}</text>`;
+  s += `<text x="66" y="62" text-anchor="middle" style="font-size:var(--text-ui-lg);font-weight:600;fill:currentColor">${centerTop}</text>`;
+  s += `<text x="66" y="79" text-anchor="middle" style="font-size:var(--text-ui-sm)">${esc(centerSub || '')}</text>`;
   s += '</svg><div style="flex:1 1 180px;min-width:170px">';
   parts.forEach((p) => {
     const share = total > 0 ? (p.value / total) * 100 : 0;
-    s += `<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12.5px">
+    s += `<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:var(--text-ui-caption)">
       <span><i style="display:inline-block;width:9px;height:9px;border-radius:3px;background:${p.color};margin-right:6px"></i>${esc(p.label)}</span>
       <span class="num">${fmtMoney(p.value)} <span class="muted">${share.toFixed(1)}%</span></span></div>`;
   });
@@ -267,17 +321,27 @@ function chartDonut(container, parts, centerTop, centerSub) {
   container.innerHTML = s;
 }
 
+// 热力图色阶对齐内置页的 --color-usage-heatmap-0..4：把 --accent 按 0/18/36/58%/82%
+// 的比例混进卡片底色，第 5 档换用更深的 --accent-fg。深浅主题各一条。
+const HEAT_RAMP = {
+  light: [[231, 231, 231], [200, 221, 244], [159, 201, 247], [108, 175, 250], [44, 127, 225]],
+  dark: [[38, 38, 38], [44, 66, 90], [49, 86, 129], [54, 109, 173], [108, 156, 207]],
+};
+
+function heatColor(v, max) {
+  const ramp = HEAT_RAMP[matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'];
+  if (!v) return `rgb(${ramp[0].join(',')})`;
+  const t = Math.pow(v / max, 0.6) * (ramp.length - 1);
+  const i = Math.min(Math.floor(t), ramp.length - 2);
+  const f = t - i;
+  const [a, b] = [ramp[i], ramp[i + 1]];
+  return `rgb(${a.map((x, k) => Math.round(x + (b[k] - x) * f)).join(',')})`;
+}
+
 function chartHeat(container, cells) {
   const map = new Map(cells.map((c) => [`${c.dow}-${c.hour}`, c]));
   const max = Math.max(1, ...cells.map((c) => c.requests));
-  const color = (v) => {
-    if (!v) return '#f2f4f7';
-    const t = Math.pow(v / max, 0.6);
-    const r = Math.round(232 - t * (232 - 47));
-    const g = Math.round(238 - t * (238 - 111));
-    const b = Math.round(245 - t * (245 - 235));
-    return `rgb(${r},${g},${b})`;
-  };
+  const color = (v) => heatColor(v, max);
   let s = '<div class="heat"><div class="lbl"></div>';
   for (let h = 0; h < 24; h++) s += `<div class="hlbl">${h % 3 === 0 ? h : ''}</div>`;
   for (let d = 0; d < 7; d++) {
@@ -322,15 +386,14 @@ function kpiCard(label, value, foot, opts = {}) {
 function renderOverview() {
   const s = state.summary, k = s.kpi;
   const running = (state.live?.running || []).length;
-  const usdNote = (state.bootstrap?.pricing?.display_currency === 'CNY')
-    ? `≈ ${fmtUSD(k.cost)}` : `≈ ${curSym()}${(k.cost * (state.bootstrap?.pricing?.usd_to_cny || 7.1)).toFixed(2)}`;
+  const usdNote = `≈ ${altMoney(k.cost)}`;
   const billed = k.input_fresh + k.cache_read;
   el('ov-kpis').innerHTML = [
     kpiCard('请求数', fmtInt(k.requests), `会话 ${fmtInt(k.sessions)} · 轮次 ${fmtInt(k.turns)}${running ? ` · <span class="tag run">进行中 ${running}</span>` : ''}`),
     kpiCard('折算费用', fmtMoney(k.cost), `${usdNote} · 按公开 API 单价逐条折算`, { small: true }),
     kpiCard('总 token', fmtTok(k.tokens), `新增 ${fmtTok(k.input_fresh)} · 缓存 ${fmtTok(k.cache_read)} · 输出 ${fmtTok(k.output)}`),
     kpiCard('缓存命中率', fmtPct(k.cache_hit_rate), `命中 ${fmtTok(k.cache_read)} / 计费输入 ${fmtTok(billed)}`, { small: true, bar: k.cache_hit_rate, barColor: COLORS.cache_read }),
-    kpiCard('错误率', fmtPct(k.error_rate), `错误 ${fmtInt(k.errors)} · 取消 ${fmtInt(k.cancelled)} · 重试 ${fmtInt(k.retries)}`, { small: true, bar: k.error_rate, barColor: '#e03131' }),
+    kpiCard('错误率', fmtPct(k.error_rate), `错误 ${fmtInt(k.errors)} · 取消 ${fmtInt(k.cancelled)} · 重试 ${fmtInt(k.retries)}`, { small: true, bar: k.error_rate, barColor: 'var(--err)' }),
     kpiCard('平均延迟', fmtMs(k.avg_ms), `P50 ${fmtMs(k.p50_ms)} · P95 ${fmtMs(k.p95_ms)}`, { small: true }),
     kpiCard('平均首字延迟', fmtMs(k.avg_ttft_ms), 'time to first token', { small: true }),
     kpiCard('模型数', fmtInt(k.models), `推理 token ${fmtTok(k.reasoning)}`, { small: true }),
@@ -339,35 +402,57 @@ function renderOverview() {
   const notices = [];
   if (k.unpriced_requests) {
     notices.push(`<div class="notice">有 ${fmtInt(k.unpriced_requests)} 条请求（${fmtTok(k.unpriced_tokens)} token）没有匹配到单价，未计入费用：
-      ${k.unpriced_models.map(esc).join('、')}。到 <code>prices.json</code> 里加一条规则即可。</div>`);
+      ${k.unpriced_models.map(esc).join('、')}。<a href="#settings">去「设置」页</a>填价格，
+      或取消勾选把它们排除在统计之外。</div>`);
   }
-  const assumed = (state.bootstrap?.models || []).filter((m) => m.pricing && m.pricing.source !== 'official');
+  // 只有"猜的"才提示：assumed 是仓库里按同族价估的，fallback 是 unknown_model_price 兜底。
+  // manual（你在设置页填/采用的）和 models.dev（同步来的）都不该再被称作估算。
+  const assumed = (state.bootstrap?.models || []).filter(
+    (m) => m.pricing && (m.pricing.source === 'assumed' || m.pricing.source === 'fallback')
+  );
   if (assumed.length) {
-    notices.push(`<div class="notice info">以下模型的单价是估算值（官方价目页取不到），请核对后改 <code>prices.json</code>：
-      ${assumed.map((m) => esc(m.model_id)).join('、')}</div>`);
+    // 分清两种情况：models.dev 上有官方价（可一键采用） vs 只能估算
+    const hasOfficial = assumed.filter((m) => m.official_ref);
+    const onlyGuess = assumed.filter((m) => !m.official_ref);
+    const names = (list) => [...new Set(list.map((m) => m.pricing.label || m.model_id))];
+    if (hasOfficial.length) {
+      const ns = names(hasOfficial);
+      notices.push(`<div class="notice info">以下 ${ns.length} 个模型当前用的是 <b>prices.json 里的估算价</b>，
+        而 models.dev 上有对应价格：${ns.map(esc).join('、')}。<a href="#settings">去「设置」页</a>
+        点每行的「采用这组价格」即可换过去（参考列会同时显示两组价格与来源 provider，便于判断是否值得采用）。</div>`);
+    }
+    if (onlyGuess.length) {
+      const ns = names(onlyGuess);
+      notices.push(`<div class="notice info">以下 ${ns.length} 个模型的单价是估算值，models.dev 里也没有对应条目：
+        ${ns.map(esc).join('、')}。<a href="#settings">去「设置」页</a>手工填写更准的价格。</div>`);
+    }
   }
   el('ov-notice').innerHTML = notices.join('');
+  renderPriceConfig();
 
   chartBarsLine(el('ov-trend'), s.series_daily.map((d) => ({
     date: d.date, requests: d.requests, cost: d.cost, errors: d.errors, tokens: d.tokens,
   })));
   el('ov-trend-legend').innerHTML =
     `<span><i style="background:${COLORS.req}"></i>请求数</span>
-     <span><i style="background:#e03131"></i>错误数</span>
+     <span><i style="background:var(--err)"></i>错误数</span>
      <span><i style="background:${COLORS.cost}"></i>费用（${curSym()}）</span>`;
 
   const mixParts = COST_LEGEND.map((c) => ({ label: c.label, color: c.color, value: k[c.key] || 0 }));
   chartDonut(el('ov-mix'), mixParts, fmtMoney(k.cost), '合计');
   el('ov-mix-hint').textContent = `${k.requests} 条请求`;
 
-  hbarTable(el('ov-models'), s.by_model.map((m) => ({
-    label: m.key,
-    value: m.cost,
-    share: m.cost_share,
-    tag: m.price_source === 'official' ? null : (m.price_source ? '估算' : '未定价'),
-    tagClass: m.price_source === 'official' ? 'mut' : 'est',
-    title: `${m.requests} 次请求 · ${fmtTok(m.tokens)} token · 平均 ${fmtMs(m.avg_ms)}`,
-  })), { max: 9, showShare: true });
+  hbarTable(el('ov-models'), s.by_model.map((m) => {
+    const pt = priceAlertTag(m.price_source);   // 只有未定价 / 估算价才挂标签
+    return {
+      label: m.key,
+      value: m.cost,
+      share: m.cost_share,
+      tag: pt ? pt.label : null,
+      tagClass: pt ? pt.cls : null,
+      title: `${m.requests} 次请求 · ${fmtTok(m.tokens)} token · 平均 ${fmtMs(m.avg_ms)}`,
+    };
+  }), { max: 9, showShare: true });
   el('ov-model-hint').textContent = `共 ${s.by_model.length} 个模型`;
 
   renderRecent();
@@ -419,9 +504,8 @@ function renderModelTable() {
     return `<th class="${c.align === 'l' ? 'l' : ''}" data-sort="${c.key}" data-sortable="${c.sortable === false ? 'no' : 'yes'}">${c.label}${arrow}</th>`;
   }).join('');
   const body = rows.map((r) => `<tr>
-    <td class="l">${esc(r.key)}${r.price_source && r.price_source !== 'official'
-      ? ` <span class="tag est">${r.price_source === 'assumed' ? '估算价' : '未定价'}</span>` : ''}
-      <div class="muted" style="font-size:11.5px">${esc(r.cost_rule || '')}</div></td>
+    <td class="l">${esc(r.key)}${priceAlertTagHTML(r.price_source)}
+      <div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.cost_rule || '')}</div></td>
     ${MODEL_COLUMNS.slice(1).map((c) => `<td class="num">${c.fmt(r[c.key])}</td>`).join('')}
   </tr>`).join('');
   const totals = ['合计', state.summary.kpi.requests, state.summary.kpi.input_fresh,
@@ -460,16 +544,27 @@ function renderAnalytics() {
   hbarTable(el('an-agents'), s.by_agent.map((a) => ({
     label: a.key, value: a.cost, share: a.cost_share,
     title: `${a.requests} 次请求 · ${fmtTok(a.tokens)} token`,
-  })), { max: 8, barColor: '#0ea5a4' });
+  })), { max: 8, barColor: 'var(--c-cache)' });
 
   hbarTable(el('an-sources'), s.by_source.map((a) => ({
     label: a.key, value: a.cost, share: a.cost_share,
     title: `${a.requests} 次请求 · ${fmtTok(a.tokens)} token`,
-  })), { max: 8, barColor: '#f59e0b' });
+  })), { max: 8, barColor: 'var(--c-output)' });
 
   renderCacheCard();
   renderTopRequests();
   renderPriceTable();
+}
+
+/** 折算依据的一句话说明。汇率数字不显示（写死的数字容易让人以为费用算错了），
+ *  但必须说清是拿哪天的汇率折的 —— 取不到当日汇率时要如实讲。 */
+function fxNote(pricing) {
+  const fx = pricing.fx || {};
+  const d = String(fx.date || '');
+  const md = d.length === 10 ? d.slice(5).replace('-', '/') : '';
+  if (!fx.stale && d) return '按当日汇率折算';
+  if (md) return `按 ${md} 汇率折算（当日汇率暂时取不到）`;
+  return '按 prices.json 里的兜底汇率折算';
 }
 
 function renderCacheCard() {
@@ -482,7 +577,8 @@ function renderCacheCard() {
   // 命中部分本可按原价计费，实际只付缓存价，差额即省下的钱（按单价表币种算完再换算成展示币种）
   let saved = 0;
   s.by_model.forEach((m) => {
-    const p = priceOf.get(m.key);
+    // by_model 的 key 是别名（可能把多个记录名并成一行），所以按 model_ids 逐个找价格
+    const p = (m.model_ids || [m.key]).map((id) => priceOf.get(id)).find(Boolean);
     if (!p || p.input == null) return;
     const unitCache = p.cache_read != null ? p.cache_read : p.input * 0.1;
     const delta = (p.input - unitCache) * (m.cache_read / 1e6);      // 以单价表币种计
@@ -499,7 +595,7 @@ function renderCacheCard() {
       ${kpiCard('若不命中', fmtMoney(cost + saved), `当前实际 ${fmtMoney(cost)}`, { small: true })}
       ${kpiCard('缓存写入', fmtTok(s.kpi.cache_write), 'cache write token', { small: true })}
     </div>
-    <p class="muted" style="font-size:12px;margin:10px 0 0">说明：DeepSeek 分时定价按高峰价估算节省额，未逐条区分高峰/低谷。</p>`;
+    <p class="muted" style="font-size:var(--text-ui-sm);margin:10px 0 0">说明：DeepSeek 分时定价按高峰价估算节省额，未逐条区分高峰/低谷。</p>`;
 }
 
 function renderTopRequests() {
@@ -515,14 +611,41 @@ function renderTopRequests() {
       <td class="num">${fmtMs(r.duration_ms)}</td></tr>`).join('')}</tbody></table>`;
 }
 
+function priceConfigHTML() {
+  const pricing = state.bootstrap?.pricing || {};
+  const ignoredModels = pricing.ignored_models || [];
+  const unknownPrice = pricing.unknown_model_price || { enabled: false };
+  const ignoredDetail = ignoredModels.length
+    ? ignoredModels.map((p) => `<code>${esc(p)}</code>`).join(' ')
+    : '<span class="muted">未配置（所有模型都参与统计）</span>';
+  const unknownDetail = unknownPrice.enabled
+    ? `<code>${esc(unknownPrice.currency || 'USD')} 输入 ${unknownPrice.input ?? '—'} / 缓存读 ${unknownPrice.cache_read ?? '—'} / 缓存写 ${unknownPrice.cache_write ?? '—'} / 输出 ${unknownPrice.output ?? '—'}（每百万 token）</code>`
+    : '<span class="muted">已禁用（未匹配规则的模型记为“未定价”，费用按 0 计）</span>';
+  return `<div class="price-config">
+    <div class="row"><span class="k">🚫 忽略模型</span><span class="v">${ignoredDetail}</span></div>
+    <div class="row"><span class="k">⚙️ 未知模型价格</span><span class="v">${unknownDetail}</span></div>
+    <div class="row"><span class="k">💱 展示币种</span><span class="v"><code>${esc(pricing.display_currency || 'CNY')}</code> · ${esc(fxNote(pricing))}</span></div>
+    <div class="hint">改 <code>prices.json</code> 里的 <code>ignored_models</code> / <code>unknown_model_price</code> 后点“刷新”即可生效，无需重启服务。</div>
+  </div>`;
+}
+
+/** 概览页与单价表上方共用同一份配置摘要 */
+function renderPriceConfig() {
+  const ov = el('ov-price-config');
+  if (ov) ov.innerHTML = priceConfigHTML();
+}
+
 function renderPriceTable() {
   const rules = state.bootstrap?.pricing?.rules || [];
   const used = new Map((state.bootstrap?.models || []).map((m) => [m.model_id, m]));
+  const configInfo = priceConfigHTML();
+
   const body = rules.map((r) => {
     const hits = [...used.values()].filter((m) => m.pricing && m.pricing.label === (r.label || r.match));
     const n = hits.reduce((s, m) => s + m.requests, 0);
-    const badge = r.source === 'official'
-      ? '<span class="tag ok">官方价</span>' : '<span class="tag est">估算</span>';
+    // 单价表里官方价要显式写出来，所以 official 也标（不套"official → 不挂标签"的约定）
+    const pt = priceTag(r.source) || { label: '官方价', cls: 'ok' };
+    const badge = `<span class="tag ${pt.cls}">${pt.label}</span>`;
     return `<tr>
       <td class="l"><code>${esc(r.match)}</code></td>
       <td class="l">${esc(r.label)} ${badge}</td>
@@ -535,11 +658,11 @@ function renderPriceTable() {
       <td class="l muted" style="white-space:normal;max-width:340px">${esc(r.note || '')}</td>
     </tr>`;
   }).join('');
-  el('an-prices').innerHTML = `<div class="table-wrap"><table class="data">
+  el('an-prices').innerHTML = `${configInfo}<div class="table-wrap"><table class="data">
     <thead><tr><th class="l">规则</th><th class="l">名称</th><th class="l">币种</th>
       <th>输入</th><th>缓存读</th><th>缓存写</th><th>输出</th><th>命中请求</th><th class="l">备注</th></tr></thead>
     <tbody>${body}</tbody></table>
-    <p class="muted" style="font-size:12px;padding:10px 16px 14px">
+    <p class="muted" style="font-size:var(--text-ui-sm);padding:10px 16px 14px">
       单价单位：每 100 万 token。文件位置：<code>prices.json</code>，改完点“刷新”即可生效。</p></div>`;
 }
 
@@ -573,7 +696,7 @@ function renderEvents() {
     <td class="num">${fmtTok(r.tokens.input)}</td>
     <td class="num muted">${fmtTok(r.tokens.cache_read)}</td>
     <td class="num">${fmtTok(r.tokens.output)}</td>
-    <td class="num">${fmtMoney(r.cost.total)}${r.cost.total ? '' : '<span class="tag est">未定价</span>'}</td>
+    <td class="num">${fmtMoney(r.cost.total)}${r.cost.priced ? '' : '<span class="tag est">未定价</span>'}</td>
     <td class="num">${fmtMs(r.duration_ms)}</td>
     <td class="num">${fmtMs(r.ttft_ms)}</td>
     <td>${STATUS_TAG[r.status] || esc(r.status)}</td>
@@ -633,6 +756,9 @@ async function openDrawer(id) {
     return;
   }
   const r = d.request, tk = r.tokens, c = r.cost;
+  // 抽屉里要把来源写清楚，所以官方价也显式标出来（不套 priceTag 的"official → 不挂标签"约定）
+  const ruleTag = c.priced ? (priceTag(c.source) || { label: '官方价', cls: 'ok' })
+    : { label: '未定价', cls: 'est' };
   el('drawer-title').textContent = `${r.model_id} · ${fmtTime(r.started_at)}`;
   const row = (k, v) => `<dt>${esc(k)}</dt><dd>${v}</dd>`;
   const tokenRows = [
@@ -655,17 +781,17 @@ async function openDrawer(id) {
     <dl class="kv">
       ${row('状态', (STATUS_TAG[r.status] || esc(r.status)) + (r.finish_reason ? ` <span class="tag mut">${esc(r.finish_reason)}</span>` : ''))}
       ${row('模型 / Provider', `${esc(r.model_id)} <span class="muted">${esc(r.provider_id)}</span>`)}
-      ${row('单价规则', c.priced ? `${esc(c.label || '')} <span class="tag ${c.source === 'official' ? 'ok' : 'est'}">${c.source === 'official' ? '官方价' : '估算'}</span>` : '<span class="tag est">未定价</span>')}
-      ${row('费用', `<b>${fmtMoney(c.total)}</b> <span class="muted">(${fmtUSD(c.total)})</span>`)}
+      ${row('单价规则', `${esc(c.label || '')} <span class="tag ${ruleTag.cls}">${ruleTag.label}</span>`)}
+      ${row('费用', `<b>${fmtMoney(c.total)}</b> <span class="muted">(${altMoney(c.total)})</span>`)}
       ${row('项目', esc(r.project_dir || '—'))}
-      ${row('会话', `${esc(r.session_title || '—')}<div class="muted" style="font-size:11.5px">${esc(r.session_id || '')}</div>`)}
+      ${row('会话', `${esc(r.session_title || '—')}<div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.session_id || '')}</div>`)}
       ${row('Agent / 来源', `${esc(r.agent || '—')} · ${esc(r.query_source || '')}`)}
       ${row('耗时 / 首字', `${fmtMs(r.duration_ms)} / ${fmtMs(r.ttft_ms)}`)}
       ${row('尝试 / 重试', `${r.attempt_index + 1} 次调用 · 重试 ${r.retry_count}`)}
       ${row('工具调用数', fmtInt(r.tool_call_count))}
-      ${row('turn / trace', `<span class="muted" style="font-size:11.5px">${esc(r.turn_id || '')}<br>${esc(r.trace_id || '')}</span>`)}
-      ${row('请求 ID', `<span class="muted" style="font-size:11.5px">${esc(d.logical_request_id || r.id)}</span>`)}
-      ${r.error_message ? row('错误', `<span style="color:#d92d20">${esc(r.error_type || '')} ${esc(r.error_code || '')}<br>${esc(r.error_message)}</span>`) : ''}
+      ${row('turn / trace', `<span class="muted" style="font-size:var(--text-ui-sm)">${esc(r.turn_id || '')}<br>${esc(r.trace_id || '')}</span>`)}
+      ${row('请求 ID', `<span class="muted" style="font-size:var(--text-ui-sm)">${esc(d.logical_request_id || r.id)}</span>`)}
+      ${r.error_message ? row('错误', `<span style="color:var(--err)">${esc(r.error_type || '')} ${esc(r.error_code || '')}<br>${esc(r.error_message)}</span>`) : ''}
     </dl>
     <p class="section-title">TOKEN 明细</p>
     <table class="data" style="margin-bottom:16px"><tbody>${tokenRows}</tbody></table>
@@ -770,7 +896,7 @@ function restoreScroll(saved) {
   });
 }
 
-const TABS = ['overview', 'analytics', 'events'];
+const TABS = ['overview', 'analytics', 'events', 'settings'];
 
 function openTab(tab, { updateHash = true } = {}) {
   if (!TABS.includes(tab)) tab = 'overview';
@@ -780,6 +906,7 @@ function openTab(tab, { updateHash = true } = {}) {
   if (updateHash && location.hash.slice(1) !== tab) history.replaceState(null, '', '#' + tab);
   // 切回来立刻用已有数据渲染，别让用户对着空卡片等下一次自动刷新
   if (tab === 'events') loadEvents();
+  else if (tab === 'settings') loadModels();
   else if (state.summary) (tab === 'overview' ? renderOverview : renderAnalytics)();
 }
 
@@ -792,21 +919,35 @@ async function refresh({ reloadBootstrap = false } = {}) {
     ]);
     state.summary = summary;
     state.live = live;
+    // bootstrap 刚到货：直接开 #settings 的那次 renderIgnored 还没读到忽略列表，这里补一次
+    if (state.tab === 'settings' && state.ignoredDraft === null) renderIgnored();
 
     el('db-info').textContent =
       `${state.bootstrap.total_rows} 条记录 · ${fmtTime(state.bootstrap.range.min)} ~ ${fmtTime(state.bootstrap.range.max)} · ${state.bootstrap.db_path}`;
     el('pricing-pill').textContent =
-      `${state.bootstrap.pricing.display_currency} · 汇率 ${state.bootstrap.pricing.usd_to_cny} · ${state.bootstrap.pricing.rules.length} 条单价规则`;
+      `${state.bootstrap.pricing.display_currency} · ${state.bootstrap.pricing.rules.length} 条单价规则`;
     const unpriced = summary.kpi.unpriced_requests;
     el('unpriced-pill').classList.toggle('hidden', !unpriced);
     el('unpriced-pill').textContent = `${unpriced} 条未定价`;
     el('btn-export').href = '/api/export.csv?' + queryString();
 
-    if (!el('f-model').options.length) buildFilters();
+    // index.html 给每个下拉框预置了一个「全部」选项，options.length 恒为 1，
+    // 拿它判断是否已填充会让 buildFilters 永远不执行。改用 facet 指纹比较。
+    const b = state.bootstrap;
+    const facetSig = JSON.stringify([
+      b.models.map((m) => m.model_id), b.facets.providers,
+      b.facets.projects.map((p) => p.value), b.facets.agents,
+      b.facets.sources, b.facets.statuses,
+    ]);
+    if (facetSig !== state.facetSig) {
+      buildFilters();
+      state.facetSig = facetSig;
+    }
 
     // 自动刷新时别把已经滚到一半的表格弹回顶部
     const scroll = captureScroll();
-    if (state.tab === 'overview') renderOverview();
+    if (state.tab === 'settings') { /* 不动：避免覆盖未保存的编辑 */ }
+    else if (state.tab === 'overview') renderOverview();
     else if (state.tab === 'analytics') renderAnalytics();
     else await loadEvents();
     restoreScroll(scroll);
@@ -815,6 +956,388 @@ async function refresh({ reloadBootstrap = false } = {}) {
     el('ov-notice').innerHTML = `<div class="notice">连不上本地服务，可能已经自动退出（标签关闭后服务会自己停）。
       重新打开：输入 <code>/usage</code>。原始错误：${esc(e.message)}</div>`;
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * 渲染：设置（逐模型的勾选 / 别名 / 价格）
+ *
+ * 表格本身就是编辑态：保存时直接读 DOM，不额外维护一份可失同步的状态。
+ * 只有筛选导致重绘时，才先把当前输入收进 state.modelEdits 以免丢失。
+ * ------------------------------------------------------------------ */
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+/** 把表格里当前的输入收成一份 {model_id: {...}}，用于重绘前暂存或提交 */
+function collectModelRows() {
+  const out = {};
+  document.querySelectorAll('#st-table tr[data-mid]').forEach((tr) => {
+    const mid = tr.dataset.mid;
+    const num = (k) => {
+      const node = tr.querySelector(`.st-num[data-k="${k}"]`);
+      const v = node ? node.value.trim() : '';
+      return v === '' ? null : Number(v);
+    };
+    out[mid] = {
+      alias: (tr.querySelector('.st-alias')?.value || '').trim(),
+      enabled: !!tr.querySelector('.st-on')?.checked,
+      price: {
+        currency: tr.querySelector('.st-cur')?.value || 'USD',
+        input: num('input'),
+        cache_read: num('cache_read'),
+        cache_write: num('cache_write'),
+        output: num('output'),
+      },
+    };
+  });
+  return out;
+}
+
+function stashModelEdits() {
+  if (!el('st-table')?.querySelector('tr[data-mid]')) return;
+  Object.assign(state.modelEdits, collectModelRows());
+}
+
+function stNum(v) {
+  return v === null || v === undefined ? '' : String(v);
+}
+
+function stSourceTag(m) {
+  if (m.ignored) return '<span class="tag err">已忽略</span>';
+  if (m.source === 'manual') return '<span class="tag ok">手填</span>';
+  if (m.source === 'unmatched') return '<span class="tag warn">未匹配</span>';
+  const src = m.source.startsWith('rule:') ? m.source.slice(5) : m.source;
+  const cls = src === 'official' ? 'ok' : (src === 'models.dev' ? 'mut' : 'est');
+  return `<span class="tag ${cls}">规则·${esc(src)}</span>`;
+}
+
+/** 有没有可用价格（来自规则或 models.dev）。目录未就绪时不能拿 models_dev 当判据，
+ *  否则「取消未匹配」会把所有行一起取消。 */
+function stIsMatched(m) {
+  if (!m) return false;
+  return !!(m.price || m.models_dev) && m.source !== 'unmatched';
+}
+
+/** models.dev 参考价 / 当前价 的倍数（以输入价为准，缺了退到输出价）。
+ *  必须先把币种统一 —— 规则里有用 CNY 的（如 kimi-k3），直接按数字比会得出荒谬的比值。 */
+function stRatio(cur, off) {
+  if (!cur || !off) return null;
+  const rate = state.bootstrap?.pricing?.usd_to_cny || 7.1;
+  const toUsd = (v, c) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return NaN;
+    return (c || 'USD') === 'CNY' ? n / rate : n;
+  };
+  for (const k of ['input', 'output']) {
+    const a = toUsd(cur[k], cur.currency);
+    const b = toUsd(off[k], off.currency);
+    if (a > 0 && b > 0) return b / a;
+  }
+  return null;
+}
+
+function stDeltaTag(m) {
+  const r = stRatio(m.price, m.models_dev && m.models_dev.price);
+  if (r == null || Math.abs(r - 1) <= 0.05) return '';
+  const txt = `参考价 ${r.toFixed(2)}×`;
+  return `<span class="tag ${r < 1 ? 'ok' : 'est'}" title="models.dev 参考价 / 当前价（已按汇率统一币种）">${txt}</span>`;
+}
+
+function stModelsDevCell(m) {
+  const md = m.models_dev;
+  if (!md) return '<span class="muted">—</span>';
+  const p = md.price || {};
+  const money = (v) => (v === null || v === undefined ? '—' : v);
+  // 用别名查到的时候标出来，方便核对"别名是否就是官方名"
+  const via = md.via === 'alias' && md.lookup
+    ? `<span class="tag mut" title="用别名查询">查:${esc(md.lookup)}</span>` : '';
+  return `<div class="md-cell">
+    <div><code>${esc(md.id || '')}</code> <span class="muted">${esc(md.provider || '')}</span>
+      <span class="tag mut">${esc(md.how || '')}</span>${via}${stDeltaTag(m)}</div>
+    <div class="muted">输入 ${money(p.input)} · 缓存读 ${money(p.cache_read)} · 缓存写 ${money(p.cache_write)} · 输出 ${money(p.output)}</div>
+    <button class="st-adopt" data-mid="${esc(m.model_id)}">采用这组价格</button>
+  </div>`;
+}
+
+function renderModels() {
+  const data = state.models;
+  if (!data) return;
+  const q = (state.stFilter || '').trim().toLowerCase();
+  const all = data.models || [];
+  const rows = all.filter((m) => {
+    if (!q) return true;
+    const md = m.models_dev || {};
+    return [m.model_id, m.alias, md.id, md.provider]
+      .filter(Boolean).join(' ').toLowerCase().includes(q);
+  });
+
+  const s = data.summary || {};
+  el('st-hint').textContent =
+    `勾选的模型才计入统计 · 共 ${s.total} 个，已选 ${s.enabled}，未匹配 ${s.unmatched} · 改完点保存`;
+  el('st-note').innerHTML =
+    '别名留空则用记录到的原始模型名。<b>多个模型填同一个别名会被合并成一行</b>'
+    + '（例如 <code>glm-5.3-flash</code> 与 <code>GLM-5.3-Flash</code>）。'
+    + '价格与规则表中的值一致时不会写进配置，该行继续跟随 <code>prices.json</code> 的规则；'
+    + '改过才会钉成手动价。';
+
+  const body = rows.map((m) => {
+    const e = state.modelEdits[m.model_id] || {};
+    const alias = e.alias !== undefined ? e.alias : (m.alias || '');
+    const enabled = e.enabled !== undefined ? e.enabled : m.enabled;
+    const price = e.price || m.price || {};
+    const cur = price.currency || 'USD';
+    const prov = (m.providers || []).join(', ');
+    return `<tr data-mid="${esc(m.model_id)}" class="${enabled ? '' : 'st-off'}">
+      <td><input type="checkbox" class="st-on" ${enabled ? 'checked' : ''}
+        ${m.ignored ? 'disabled title="在 ignored_models 里，需先从忽略列表移除"' : ''}></td>
+      <td class="l"><code>${esc(m.model_id)}</code>
+        ${m.ignored ? '<span class="tag err">忽略中</span>' : ''}
+        <div class="muted st-sub">${esc(prov)}</div></td>
+      <td><input class="st-alias" value="${esc(alias)}"
+        placeholder="${esc((m.models_dev && m.models_dev.id) || '别名')}"></td>
+      <td><input class="st-num" data-k="input" value="${stNum(price.input)}"></td>
+      <td><input class="st-num" data-k="cache_read" value="${stNum(price.cache_read)}"></td>
+      <td><input class="st-num" data-k="cache_write" value="${stNum(price.cache_write)}"></td>
+      <td><input class="st-num" data-k="output" value="${stNum(price.output)}"></td>
+      <td><select class="st-cur">
+        <option value="USD"${cur === 'USD' ? ' selected' : ''}>USD</option>
+        <option value="CNY"${cur === 'CNY' ? ' selected' : ''}>CNY</option>
+      </select></td>
+      <td class="l">${stSourceTag(m)}
+        <div class="muted st-sub">${esc(m.rule_match || '')}</div></td>
+      <td class="num">${fmtInt(m.requests)}</td>
+      <td class="l">${stModelsDevCell(m)}</td>
+    </tr>`;
+  }).join('');
+
+  el('st-table').innerHTML = `<div class="table-wrap"><table class="data st-table">
+    <thead><tr>
+      <th>启用</th><th class="l">记录的模型名</th><th class="l">别名</th>
+      <th>输入</th><th>缓存读</th><th>缓存写</th><th>输出</th><th>币种</th>
+      <th class="l">价格来源</th><th>请求</th><th class="l">models.dev 参考（每百万 token）</th>
+    </tr></thead>
+    <tbody>${body || '<tr><td colspan="11"><div class="empty">没有匹配的模型</div></td></tr>'}</tbody>
+  </table></div>`;
+
+  el('st-table').querySelectorAll('.st-adopt').forEach((btn) => {
+    btn.onclick = () => {
+      const mid = btn.dataset.mid;
+      const m = all.find((x) => x.model_id === mid);
+      if (!m || !m.models_dev) return;
+      const tr = [...el('st-table').querySelectorAll('tr[data-mid]')]
+        .find((r) => r.dataset.mid === mid);
+      if (!tr) return;
+      const p = m.models_dev.price || {};
+      ['input', 'cache_read', 'cache_write', 'output'].forEach((k) => {
+        const node = tr.querySelector(`.st-num[data-k="${k}"]`);
+        if (node) node.value = p[k] === null || p[k] === undefined ? '' : p[k];
+      });
+      const cur = tr.querySelector('.st-cur');
+      if (cur) cur.value = p.currency || 'USD';
+      el('st-status').textContent = '已填入 models.dev 价格，记得保存';
+    };
+  });
+
+  el('st-table').querySelectorAll('.st-on').forEach((cb) => {
+    cb.onchange = () => {
+      const tr = cb.closest('tr');
+      tr.classList.toggle('st-off', !cb.checked);
+    };
+  });
+}
+
+function stAgeText(seconds) {
+  if (seconds == null) return '';
+  if (seconds < 90) return '刚刚';
+  if (seconds < 3600) return `${Math.round(seconds / 60)} 分钟`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)} 小时`;
+  return `${Math.round(seconds / 86400)} 天`;
+}
+
+/** 忽略列表：已选项做成可删的 chip，新增项从下拉里挑（也允许直接敲通配符） */
+function renderIgnored() {
+  // draft 是"用户改到一半"的副本，只在 bootstrap 到手后初始化一次。
+  // 直接用 #settings 打开时 bootstrap 可能还在路上 —— 那会儿要是把 draft 定成空数组，
+  // 界面会显示成"还没有忽略任何模型"，一点保存就把已有列表清掉；
+  // 而且 draft 一旦不是 null 就再也不会重新读，错到底。所以这里宁可不渲染编辑区。
+  if (state.ignoredDraft === null && state.bootstrap) {
+    state.ignoredDraft = [...(state.bootstrap.pricing?.ignored_models || [])];
+  }
+  if (state.ignoredDraft === null) {
+    el('st-ignored').innerHTML = '<p class="muted st-note">正在读取忽略列表…</p>';
+    return;
+  }
+  const pats = state.ignoredDraft;
+  const allModels = (state.models?.models || []).map((m) => m.model_id);
+  const taken = new Set(pats.map((p) => p.toLowerCase()));
+  const options = allModels
+    .filter((m) => !taken.has(m.toLowerCase()))
+    .map((m) => `<option value="${esc(m)}"></option>`).join('');
+
+  const chips = pats.length
+    ? pats.map((p, i) => `<span class="chip">${esc(p)}<button data-i="${i}" title="移除">×</button></span>`).join('')
+    : '<span class="muted">还没有忽略任何模型</span>';
+
+  el('st-ignored').innerHTML = `
+    <div class="ignored-chips" id="st-ignored-chips">${chips}</div>
+    <div class="ignored-edit">
+      <input type="text" id="st-ignored-input" list="st-ignored-list" autocomplete="off"
+        placeholder="从下拉里选一个已记录的模型，或直接输入通配符（如 *test*）">
+      <datalist id="st-ignored-list">${options}</datalist>
+      <button id="st-ignored-add">添加</button>
+      <button id="st-ignored-save" class="primary">保存忽略列表</button>
+    </div>
+    <p class="muted st-note">
+      支持 <code>*</code> 通配、大小写不敏感，命中的模型<b>完全不出现在看板里</b>（含筛选下拉与导出），
+      比在表格里取消勾选更彻底。共 ${pats.length} 条。
+    </p>`;
+
+  const input = el('st-ignored-input');
+  const add = () => {
+    const v = (input.value || '').trim();
+    if (!v) return;
+    if (!pats.some((p) => p.toLowerCase() === v.toLowerCase())) pats.push(v);
+    input.value = '';
+    renderIgnored();
+    el('st-ignored-input')?.focus();
+  };
+  el('st-ignored-add').onclick = add;
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  // datalist 选中后多数浏览器不触发 change，这里补一个 input 事件兜底
+  input.addEventListener('change', () => { if (input.value.trim()) add(); });
+
+  el('st-ignored-chips').querySelectorAll('button[data-i]').forEach((btn) => {
+    btn.onclick = () => {
+      pats.splice(Number(btn.dataset.i), 1);
+      renderIgnored();
+    };
+  });
+
+  el('st-ignored-save').onclick = async () => {
+    el('st-status').textContent = '保存中…';
+    try {
+      // 只提交这一个字段：GET /api/prices 是裁剪视图，整体回写会丢 peak / defaults
+      await postJSON('/api/models', { ignored_models: pats });
+      state.bootstrap = await fetchJSON('/api/bootstrap');
+      await refresh();
+      renderIgnored();
+      el('st-status').textContent = `忽略列表已保存（${pats.length} 条）`;
+    } catch (e) {
+      el('st-status').textContent = '保存失败：' + e.message;
+    }
+  };
+}
+
+async function loadModels({ retries = 24 } = {}) {
+  el('st-status').textContent = '加载中…';
+  try {
+    state.models = await fetchJSON('/api/models');
+  } catch (e) {
+    el('st-status').textContent = '加载失败：' + e.message;
+    return;
+  }
+  if (state.ignoredDraft === null && state.bootstrap) {
+    state.ignoredDraft = [...(state.bootstrap.pricing?.ignored_models || [])];
+  }
+  renderModels();
+  renderIgnored();
+  const c = state.models.catalog || {};
+  if (c.ready) {
+    // 有数据就用，哪怕是旧缓存 —— 网络不通不该让参考价整体消失
+    el('st-status').textContent = c.error
+      ? `参考价取自 ${stAgeText(c.age_seconds)}前的缓存（models.dev 暂时不可达）`
+      : (c.stale ? `参考价取自 ${stAgeText(c.age_seconds)}前的缓存，正在后台更新` : '已就绪');
+  } else if (c.loading && retries > 0) {
+    // 首次拉取要 8~10 秒，稍后自己再来一次，别让首屏干等
+    el('st-status').textContent = '正在拉取 models.dev 目录（首次约 10 秒）…';
+    setTimeout(() => { if (state.tab === 'settings') loadModels({ retries: retries - 1 }); }, 5000);
+  } else {
+    el('st-status').textContent = c.error
+      ? `models.dev 不可达，参考价暂缺：${c.error}`
+      : '目录未就绪，可点「重新匹配」';
+  }
+}
+
+async function saveModels() {
+  const rows = collectModelRows();
+  const count = Object.keys(rows).length;
+  if (!count) { el('st-status').textContent = '没有可保存的行'; return; }
+  el('st-status').textContent = `保存 ${count} 行…`;
+  try {
+    await postJSON('/api/models', { models: rows });
+    state.modelEdits = {};
+    state.bootstrap = await fetchJSON('/api/bootstrap');  // 名字/价格都变了，重取
+    await refresh({ reloadBootstrap: false });
+    await loadModels();
+    el('st-status').textContent = `已保存 ${count} 行，统计已按新的勾选重算`;
+  } catch (e) {
+    el('st-status').textContent = '保存失败：' + e.message;
+  }
+}
+
+function bindSettings() {
+  el('st-save').onclick = saveModels;
+  el('st-filter').addEventListener('input', () => {
+    stashModelEdits();          // 重绘前先把输入收好，免得筛选把它们冲掉
+    state.stFilter = el('st-filter').value;
+    renderModels();
+  });
+  el('st-match').onclick = async () => {
+    // models.dev 时快时慢，慢的时候要几分钟，所以按"fetched_at 有没有变"判断成败，
+    // 而不是等固定时长后报超时 —— 拉不动时旧缓存还在用，得如实说出来。
+    const before = state.models?.catalog?.fetched_at || 0;
+    el('st-status').textContent = '正在后台重新拉取 models.dev 目录…';
+    try {
+      await postJSON('/api/models/match', {});
+    } catch (e) {
+      el('st-status').textContent = '触发拉取失败：' + e.message;
+      return;
+    }
+    const started = Date.now();
+    for (let i = 0; i < 72; i++) {          // 最多等 6 分钟
+      await new Promise((r) => setTimeout(r, 5000));
+      let d;
+      try { d = await fetchJSON('/api/models'); } catch (e) { continue; }
+      const c = d.catalog || {};
+      if (c.fetched_at && c.fetched_at !== before) {
+        state.models = d;
+        renderModels();
+        renderIgnored();
+        el('st-status').textContent = `目录已更新（${c.size} 个带报价的模型）`;
+        return;
+      }
+      if (!c.loading) {
+        el('st-status').textContent = c.error
+          ? `拉取失败：${c.error}　仍在使用 ${stAgeText(c.age_seconds)}前的缓存`
+          : '拉取结束但目录没有变化，稍后再试一次';
+        return;
+      }
+      el('st-status').textContent =
+        `正在后台拉取 models.dev 目录…已 ${Math.round((Date.now() - started) / 1000)} 秒（该站点可能很慢）`;
+    }
+    el('st-status').textContent = '等待超时，拉取可能仍在后台进行，稍后刷新页面看看';
+  };
+  el('st-check-matched').onclick = () => {
+    el('st-table').querySelectorAll('tr[data-mid]').forEach((tr) => {
+      const row = (state.models?.models || []).find((m) => m.model_id === tr.dataset.mid);
+      const cb = tr.querySelector('.st-on');
+      if (cb && !cb.disabled && stIsMatched(row)) { cb.checked = true; tr.classList.remove('st-off'); }
+    });
+  };
+  el('st-uncheck-unmatched').onclick = () => {
+    el('st-table').querySelectorAll('tr[data-mid]').forEach((tr) => {
+      const row = (state.models?.models || []).find((m) => m.model_id === tr.dataset.mid);
+      const cb = tr.querySelector('.st-on');
+      if (cb && !cb.disabled && row && !stIsMatched(row)) { cb.checked = false; tr.classList.add('st-off'); }
+    });
+  };
 }
 
 function init() {
@@ -849,6 +1372,7 @@ function init() {
   });
 
   bindFilters();
+  bindSettings();
   openTab(location.hash.slice(1) || 'overview');
   refresh({ reloadBootstrap: true });
 }
