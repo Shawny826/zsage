@@ -87,20 +87,36 @@ const PRICE_TAGS = {
   'models.dev': { label: '目录价', cls: 'mut' }, // 从 models.dev 同步来的，可能是转售商价格
   assumed: { label: '估算价', cls: 'est' },      // 仓库里按同族价估的
   fallback: { label: '兜底价', cls: 'est' },     // unknown_model_price
+  unpriced: { label: '未定价', cls: 'est' },     // 确实没匹配到任何价
 };
 
 /** 返回 { label, cls }；返回 null 表示"官方价、不挂标签"（它是基准情况）。 */
 function priceTag(src) {
   const key = String(src ?? '').replace(/^rule:/, '').replace(/^model:/, '');
-  if (!key) return { label: '未定价', cls: 'est' };
+  if (!key) return PRICE_TAGS.unpriced;
   if (key === 'official') return null;
   // 认不出来源就把来源名照实显示，别谎报成"未定价"
   return PRICE_TAGS[key] || { label: key, cls: 'est' };
 }
 
-/** 标签 HTML；official 返回空串（不挂标签）。 */
-function priceTagHTML(src) {
-  const t = priceTag(src);
+/** 模型费用类表格（概览的费用占比、分析页的模型明细）用的价格标签。
+ *
+ *  这些表里标签是「提示」，不是「状态」：只在需要你动手时才挂 ——
+ *  没价的（未定价，费用会算成 0）和估算的（按同族价猜的，要你核对）。
+ *  官方价 / 手填 / models.dev 目录价都是能直接用的价，一律不挂，
+ *  否则一列里全是徽章，真正要处理的那行反而看不见了。
+ *
+ *  想连"估算价"也不显示的话，把下面 assumed / fallback 那行删掉即可。
+ */
+function priceAlertTag(src) {
+  const key = String(src ?? '').replace(/^rule:/, '').replace(/^model:/, '');
+  if (!key) return PRICE_TAGS.unpriced;
+  if (key === 'assumed' || key === 'fallback') return PRICE_TAGS[key];
+  return null;
+}
+
+function priceAlertTagHTML(src) {
+  const t = priceAlertTag(src);
   return t ? ` <span class="tag ${t.cls}">${t.label}</span>` : '';
 }
 
@@ -427,7 +443,7 @@ function renderOverview() {
   el('ov-mix-hint').textContent = `${k.requests} 条请求`;
 
   hbarTable(el('ov-models'), s.by_model.map((m) => {
-    const pt = priceTag(m.price_source);   // official → null，不挂标签
+    const pt = priceAlertTag(m.price_source);   // 只有未定价 / 估算价才挂标签
     return {
       label: m.key,
       value: m.cost,
@@ -488,7 +504,7 @@ function renderModelTable() {
     return `<th class="${c.align === 'l' ? 'l' : ''}" data-sort="${c.key}" data-sortable="${c.sortable === false ? 'no' : 'yes'}">${c.label}${arrow}</th>`;
   }).join('');
   const body = rows.map((r) => `<tr>
-    <td class="l">${esc(r.key)}${priceTagHTML(r.price_source)}
+    <td class="l">${esc(r.key)}${priceAlertTagHTML(r.price_source)}
       <div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.cost_rule || '')}</div></td>
     ${MODEL_COLUMNS.slice(1).map((c) => `<td class="num">${c.fmt(r[c.key])}</td>`).join('')}
   </tr>`).join('');
