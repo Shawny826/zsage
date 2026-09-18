@@ -77,6 +77,33 @@ const STATUS_TAG = {
   running: '<span class="tag run">进行中</span>',
 };
 
+/* 价格来源 → 标签。
+ * 「未定价」只表示"确实没匹配到任何价"；模糊匹配、models.dev 目录、手填、
+ * 兜底价都算已经有价，各有各的说法，不能一律叫未定价。
+ * 服务端 cost.source / summary.price_source 取值：manual | fallback |
+ * official | assumed | models.dev | rule:<上面之一>。 */
+const PRICE_TAGS = {
+  manual: { label: '手填', cls: 'ok' },          // 设置页填的 / 点「采用」来的
+  'models.dev': { label: '目录价', cls: 'mut' }, // 从 models.dev 同步来的，可能是转售商价格
+  assumed: { label: '估算价', cls: 'est' },      // 仓库里按同族价估的
+  fallback: { label: '兜底价', cls: 'est' },     // unknown_model_price
+};
+
+/** 返回 { label, cls }；返回 null 表示"官方价、不挂标签"（它是基准情况）。 */
+function priceTag(src) {
+  const key = String(src ?? '').replace(/^rule:/, '').replace(/^model:/, '');
+  if (!key) return { label: '未定价', cls: 'est' };
+  if (key === 'official') return null;
+  // 认不出来源就把来源名照实显示，别谎报成"未定价"
+  return PRICE_TAGS[key] || { label: key, cls: 'est' };
+}
+
+/** 标签 HTML；official 返回空串（不挂标签）。 */
+function priceTagHTML(src) {
+  const t = priceTag(src);
+  return t ? ` <span class="tag ${t.cls}">${t.label}</span>` : '';
+}
+
 const DOW = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 // 取 ZCode 内置页的图表色（--color-usage-chart-1..6），并交给 CSS 变量，
 // 这样浅色/深色主题切换时不用重新渲染。只在 style 属性里用（var() 在 SVG 表现属性里无效）。
@@ -399,14 +426,17 @@ function renderOverview() {
   chartDonut(el('ov-mix'), mixParts, fmtMoney(k.cost), '合计');
   el('ov-mix-hint').textContent = `${k.requests} 条请求`;
 
-  hbarTable(el('ov-models'), s.by_model.map((m) => ({
-    label: m.key,
-    value: m.cost,
-    share: m.cost_share,
-    tag: m.price_source === 'official' ? null : (m.price_source ? '估算' : '未定价'),
-    tagClass: m.price_source === 'official' ? 'mut' : 'est',
-    title: `${m.requests} 次请求 · ${fmtTok(m.tokens)} token · 平均 ${fmtMs(m.avg_ms)}`,
-  })), { max: 9, showShare: true });
+  hbarTable(el('ov-models'), s.by_model.map((m) => {
+    const pt = priceTag(m.price_source);   // official → null，不挂标签
+    return {
+      label: m.key,
+      value: m.cost,
+      share: m.cost_share,
+      tag: pt ? pt.label : null,
+      tagClass: pt ? pt.cls : null,
+      title: `${m.requests} 次请求 · ${fmtTok(m.tokens)} token · 平均 ${fmtMs(m.avg_ms)}`,
+    };
+  }), { max: 9, showShare: true });
   el('ov-model-hint').textContent = `共 ${s.by_model.length} 个模型`;
 
   renderRecent();
@@ -458,8 +488,7 @@ function renderModelTable() {
     return `<th class="${c.align === 'l' ? 'l' : ''}" data-sort="${c.key}" data-sortable="${c.sortable === false ? 'no' : 'yes'}">${c.label}${arrow}</th>`;
   }).join('');
   const body = rows.map((r) => `<tr>
-    <td class="l">${esc(r.key)}${r.price_source && r.price_source !== 'official'
-      ? ` <span class="tag est">${r.price_source === 'assumed' ? '估算价' : '未定价'}</span>` : ''}
+    <td class="l">${esc(r.key)}${priceTagHTML(r.price_source)}
       <div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.cost_rule || '')}</div></td>
     ${MODEL_COLUMNS.slice(1).map((c) => `<td class="num">${c.fmt(r[c.key])}</td>`).join('')}
   </tr>`).join('');
@@ -587,8 +616,9 @@ function renderPriceTable() {
   const body = rules.map((r) => {
     const hits = [...used.values()].filter((m) => m.pricing && m.pricing.label === (r.label || r.match));
     const n = hits.reduce((s, m) => s + m.requests, 0);
-    const badge = r.source === 'official'
-      ? '<span class="tag ok">官方价</span>' : '<span class="tag est">估算</span>';
+    // 单价表里官方价要显式写出来，所以 official 也标（不套"official → 不挂标签"的约定）
+    const pt = priceTag(r.source) || { label: '官方价', cls: 'ok' };
+    const badge = `<span class="tag ${pt.cls}">${pt.label}</span>`;
     return `<tr>
       <td class="l"><code>${esc(r.match)}</code></td>
       <td class="l">${esc(r.label)} ${badge}</td>
@@ -639,7 +669,7 @@ function renderEvents() {
     <td class="num">${fmtTok(r.tokens.input)}</td>
     <td class="num muted">${fmtTok(r.tokens.cache_read)}</td>
     <td class="num">${fmtTok(r.tokens.output)}</td>
-    <td class="num">${fmtMoney(r.cost.total)}${r.cost.total ? '' : '<span class="tag est">未定价</span>'}</td>
+    <td class="num">${fmtMoney(r.cost.total)}${r.cost.priced ? '' : '<span class="tag est">未定价</span>'}</td>
     <td class="num">${fmtMs(r.duration_ms)}</td>
     <td class="num">${fmtMs(r.ttft_ms)}</td>
     <td>${STATUS_TAG[r.status] || esc(r.status)}</td>
@@ -699,6 +729,9 @@ async function openDrawer(id) {
     return;
   }
   const r = d.request, tk = r.tokens, c = r.cost;
+  // 抽屉里要把来源写清楚，所以官方价也显式标出来（不套 priceTag 的"official → 不挂标签"约定）
+  const ruleTag = c.priced ? (priceTag(c.source) || { label: '官方价', cls: 'ok' })
+    : { label: '未定价', cls: 'est' };
   el('drawer-title').textContent = `${r.model_id} · ${fmtTime(r.started_at)}`;
   const row = (k, v) => `<dt>${esc(k)}</dt><dd>${v}</dd>`;
   const tokenRows = [
@@ -721,7 +754,7 @@ async function openDrawer(id) {
     <dl class="kv">
       ${row('状态', (STATUS_TAG[r.status] || esc(r.status)) + (r.finish_reason ? ` <span class="tag mut">${esc(r.finish_reason)}</span>` : ''))}
       ${row('模型 / Provider', `${esc(r.model_id)} <span class="muted">${esc(r.provider_id)}</span>`)}
-      ${row('单价规则', c.priced ? `${esc(c.label || '')} <span class="tag ${c.source === 'official' ? 'ok' : 'est'}">${c.source === 'official' ? '官方价' : '估算'}</span>` : '<span class="tag est">未定价</span>')}
+      ${row('单价规则', `${esc(c.label || '')} <span class="tag ${ruleTag.cls}">${ruleTag.label}</span>`)}
       ${row('费用', `<b>${fmtMoney(c.total)}</b> <span class="muted">(${altMoney(c.total)})</span>`)}
       ${row('项目', esc(r.project_dir || '—'))}
       ${row('会话', `${esc(r.session_title || '—')}<div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.session_id || '')}</div>`)}
