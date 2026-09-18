@@ -13,6 +13,7 @@
     zsage status         服务、端口、运行模式、几个标签在看、数据规模
     zsage doctor         体检：Python 版本 / 数据库 / 单价表 / 端口 / 浏览器 / shim
     zsage sync-prices    从 models.dev 给未定价的模型补价格
+    zsage sync-fx        刷新当日 USD→CNY 汇率（折算展示币种用，每天自动过期）
     zsage setup-auto-sync         设置每日自动同步（北京时间 8:00）
     zsage setup-auto-sync --remove 移除自动同步任务
     zsage install        把 zsage 命令装到 PATH（Windows 可加 --autostart 开机自启服务）
@@ -597,6 +598,7 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         tail = f"，仍缺 {len(unresolved)} 个" if unresolved else ""
         print(f"[{stamp}] 价格同步：新增 {len(added)}、刷新 {len(refreshed)}{tail}")
+        _refresh_fx(f"[{stamp}] ")
         return 0
 
     print()
@@ -626,7 +628,39 @@ def cmd_sync_prices(auto_mode: bool = False) -> int:
             print(f"    …另有 {len(already) - 8} 个")
     if changed:
         print(f"\n已写入 {PRICES_PATH}（改完刷新页面即生效）")
+    # 顺带刷一下当日汇率：这个命令由每日定时任务在跑，汇率跟着一起保鲜，
+    # 免得服务端每次都要自己去拉（拉不到时会退回 prices.json 的兜底值）
+    print()
+    _refresh_fx()
     return 0
+
+
+def _refresh_fx(prefix: str = "") -> bool:
+    """刷新当日汇率并打印一行结果；返回是否拉通。
+
+    每日同步（含 --auto）与服务端各走各的路，但都调这里，免得两处各写一份。
+    """
+    import fx_rate
+
+    got = fx_rate.refresh_now(str(BASE_DIR))
+    if got:
+        rate, source = got
+        print(f"{prefix}✓ 当日汇率：1 USD = {rate:.4f} CNY（{source}）")
+        return True
+    cached = fx_rate.read_cache(str(BASE_DIR))
+    stale = f"沿用缓存 {cached['date']}（{cached['source']}）" if cached else "沿用 prices.json 的兜底汇率"
+    print(f"{prefix}⚠ 汇率没拉到，{stale}", file=sys.stderr)
+    return False
+
+
+def cmd_sync_fx() -> int:
+    """刷新当日 USD→CNY 汇率。
+
+    汇率只用于把费用折算成展示币种（以及设置页参考列的比价），不参与费用本身的
+    计算；服务端读取时发现不是当天的会自己在后台拉，这个命令只是给
+    "网络当时不通、想手动再试一次" 留的口子。
+    """
+    return 0 if _refresh_fx() else 1
 
 
 def cmd_setup_auto_sync() -> int:
@@ -809,7 +843,7 @@ def cmd_restart(port: int | None = None) -> int:
 # 所有已识别的子命令。写成常量是为了让拼错的命令报错，而不是静默走默认分支
 KNOWN_ACTIONS = (
     "stop", "停", "status", "状态", "doctor", "restart", "重启",
-    "sync-prices", "setup-auto-sync", "install", "uninstall", "help",
+    "sync-prices", "sync-fx", "setup-auto-sync", "install", "uninstall", "help",
 )
 
 
@@ -834,6 +868,8 @@ def main() -> int:
         return cmd_doctor()
     if action == "sync-prices":
         return cmd_sync_prices(auto_mode="--auto" in argv)
+    if action == "sync-fx":
+        return cmd_sync_fx()
     if action == "setup-auto-sync":
         return cmd_setup_auto_sync()
     if action == "install":

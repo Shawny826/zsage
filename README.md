@@ -85,9 +85,17 @@ token 明细、费用分解、provider 原始 usage JSON、错误信息、turn/t
 单价表是 [`prices.json`](prices.json)，改完**刷新页面即生效**（不用重启服务）：
 
 - `match` 支持 `*` 通配、大小写不敏感，按数组顺序首次命中生效（例外规则写在前面）
-- `currency` 每条规则可写 CNY 或 USD，汇总按 `usd_to_cny` 换算成 `display_currency`
+- `currency` 每条规则可写 CNY 或 USD，汇总时按**当日汇率**换算成 `display_currency`
   （仓库里预置的规则已统一为 USD，`display_currency` 也是 USD；要改回人民币只需把
   `display_currency` 设成 `CNY`，规则不必动，折算会自动进行）
+- **汇率自动保鲜**：服务端读取时发现手上的汇率不是当天的，会在后台重新拉一次
+  （`open.er-api.com` 优先，`frankfurter.dev`（ECB）兜底），拉取不阻塞任何接口。
+  结果落在 `fx_rate_cache.json`（已 gitignore），跨天自动重拉。
+  `zsage sync-prices`（每日定时任务）会顺带刷新；网络不通时可手动 `zsage sync-fx`。
+  `prices.json` 里的 `usd_to_cny` 只是**离线兜底**，不再需要手工维护 —— 界面上也不显示
+  汇率数字（一个写死的数字只会让人怀疑费用算错了），只说明"按当日汇率折算"。
+  注意汇率只影响**折算展示**与设置页参考列的比价，**不参与费用本身的计算**：
+  规则币种与展示币种一致时它是恒等变换。
 - `source: "official"` = 厂商公开价目；`"assumed"` = 估算（UI 会打「估算」标签提醒你核对）
 - `peak` 支持分时定价（如 DeepSeek 高峰 $0.30/$0.006/$1.20、低谷减半、窗口 01:00–04:00 与 06:00–10:00 UTC 工作日）
 - **`ignored_models`** 忽略列表：匹配到的模型请求不会计入统计和费用（支持通配符）

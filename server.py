@@ -30,6 +30,7 @@ from fnmatch import fnmatchcase
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
+import fx_rate
 import model_catalog as catalog
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,9 +101,22 @@ class Pricing:
             }
             self._models_lower = {k.lower(): v for k, v in self._models.items()}
             self.display_currency = self.cfg.get("display_currency") or "CNY"
-            self.usd_to_cny = float(self.cfg.get("usd_to_cny") or 7.1)
+            # 汇率不再直接用配置里的死数：每次读都是「当日最新」（见 fx_info），
+            # 联网取不到时才退回 prices.json 的这个值
+            self._fx_fallback = float(self.cfg.get("usd_to_cny") or 7.1)
             self.unknown_price = self.cfg.get("unknown_model_price", {"enabled": False})
             print(f"[prices] 载入 {len(self._rules)} 条规则 -> {self.display_currency}")
+
+    # -- 汇率 ------------------------------------------------------------- #
+    def fx_info(self) -> dict:
+        """当日 USD→CNY 及其来源。不是今天的会顺手丢个后台线程去拉，不阻塞调用方。
+
+        折算展示币种、设置页参考列比价都走它，保证用的是当天汇率而不是配置里那个死数。
+        """
+        return fx_rate.current(BASE_DIR, self._fx_fallback)
+
+    def usd_to_cny(self) -> float:
+        return self.fx_info()["rate"]
 
     # -- 换算 ------------------------------------------------------------- #
     def to_display(self, amount: float, currency: str) -> float:
@@ -111,9 +125,9 @@ class Pricing:
         if currency == self.display_currency:
             return amount
         if self.display_currency == "CNY" and currency == "USD":
-            return amount * self.usd_to_cny
+            return amount * self.usd_to_cny()
         if self.display_currency == "USD" and currency == "CNY":
-            return amount / self.usd_to_cny
+            return amount / self.usd_to_cny()
         return amount
 
     def is_ignored(self, model_id: str) -> bool:
@@ -265,9 +279,11 @@ class Pricing:
         }
 
     def public_view(self) -> dict:
+        fx = self.fx_info()
         return {
             "display_currency": self.display_currency,
-            "usd_to_cny": self.usd_to_cny,
+            "usd_to_cny": fx["rate"],
+            "fx": fx,
             "ignored_models": self.cfg.get("ignored_models", []),
             "unknown_model_price": self.cfg.get("unknown_model_price", {"enabled": False}),
             "models": self.cfg.get("models", {}),
@@ -1438,6 +1454,8 @@ def main():
     write_runtime(host, port)
     # 提前把 models.dev 目录拉起来：默认勾选状态依赖它，"目录没就绪"会让统计口径短暂从严
     ensure_catalog()
+    # 汇率同理，但只是展示用，拉取在后台，不拖慢启动
+    PRICING.fx_info()
     print(f"ZCode 用量看板：{url}")
     print(f"数据库：{DB_PATH}")
     print(f"单价表：{PRICES_PATH}（改完刷新页面即生效）")

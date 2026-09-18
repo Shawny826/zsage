@@ -540,6 +540,17 @@ function renderAnalytics() {
   renderPriceTable();
 }
 
+/** 折算依据的一句话说明。汇率数字不显示（写死的数字容易让人以为费用算错了），
+ *  但必须说清是拿哪天的汇率折的 —— 取不到当日汇率时要如实讲。 */
+function fxNote(pricing) {
+  const fx = pricing.fx || {};
+  const d = String(fx.date || '');
+  const md = d.length === 10 ? d.slice(5).replace('-', '/') : '';
+  if (!fx.stale && d) return '按当日汇率折算';
+  if (md) return `按 ${md} 汇率折算（当日汇率暂时取不到）`;
+  return '按 prices.json 里的兜底汇率折算';
+}
+
 function renderCacheCard() {
   const s = state.summary;
   const priceOf = new Map((state.bootstrap?.models || [])
@@ -597,7 +608,7 @@ function priceConfigHTML() {
   return `<div class="price-config">
     <div class="row"><span class="k">🚫 忽略模型</span><span class="v">${ignoredDetail}</span></div>
     <div class="row"><span class="k">⚙️ 未知模型价格</span><span class="v">${unknownDetail}</span></div>
-    <div class="row"><span class="k">💰 汇率 / 展示币种</span><span class="v"><code>${esc(pricing.display_currency || 'CNY')}</code> · USD→CNY ${pricing.usd_to_cny ?? '—'}</span></div>
+    <div class="row"><span class="k">💱 展示币种</span><span class="v"><code>${esc(pricing.display_currency || 'CNY')}</code> · ${esc(fxNote(pricing))}</span></div>
     <div class="hint">改 <code>prices.json</code> 里的 <code>ignored_models</code> / <code>unknown_model_price</code> 后点“刷新”即可生效，无需重启服务。</div>
   </div>`;
 }
@@ -898,7 +909,7 @@ async function refresh({ reloadBootstrap = false } = {}) {
     el('db-info').textContent =
       `${state.bootstrap.total_rows} 条记录 · ${fmtTime(state.bootstrap.range.min)} ~ ${fmtTime(state.bootstrap.range.max)} · ${state.bootstrap.db_path}`;
     el('pricing-pill').textContent =
-      `${state.bootstrap.pricing.display_currency} · 汇率 ${state.bootstrap.pricing.usd_to_cny} · ${state.bootstrap.pricing.rules.length} 条单价规则`;
+      `${state.bootstrap.pricing.display_currency} · ${state.bootstrap.pricing.rules.length} 条单价规则`;
     const unpriced = summary.kpi.unpriced_requests;
     el('unpriced-pill').classList.toggle('hidden', !unpriced);
     el('unpriced-pill').textContent = `${unpriced} 条未定价`;
