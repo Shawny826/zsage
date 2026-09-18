@@ -163,6 +163,12 @@ zsage restart -p 9000   # 重启并换到 9000
 
 ### 修复
 
+- **设置页的别名框与四个价格输入框一直是浏览器默认样式**（同样是改版时发现的）：
+  这些 input 在 `app.js` 里只写了 `class="st-alias" / "st-num"`，**没有 `type` 属性**，
+  而样式表用的是 `input[type=text]` 选择器，匹配不上。于是它们顶着默认的 170px 宽、
+  默认边框挤在表格里，也是设置页那 2187px 横向滚动的主因。改为按类名选择，
+  并给基础输入框样式补上 `input:not([type])`（现在 74px 宽、右对齐、26px 高、6px 圆角）。
+
 - **直接打开 `#settings` 会把忽略列表读成空，且一点「保存」就真的清空它**（改版配色时
   顺手发现的旧 bug）：`state.ignoredDraft` 只在 `=== null` 时从
   `bootstrap.pricing.ignored_models` 初始化，而 `openTab('settings')` 里的 `loadModels()`

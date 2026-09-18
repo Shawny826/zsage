@@ -197,13 +197,15 @@ button.primary:hover, .btn.primary:hover { background: var(--primary); opacity: 
 }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field > span { font-size: var(--text-ui-sm); color: var(--muted); }
-select, input[type=text], input[type=date] {
+/* 注意 input:not([type])：设置页的 .st-alias / .st-num 没写 type 属性，
+   只写 [type=text] 会漏掉它们（此前就是这样，价格输入框一直是浏览器默认样式） */
+select, input[type=text], input[type=date], input:not([type]) {
   font: inherit; font-size: var(--text-ui-caption); height: 30px; padding: 0 9px;
   border: 1px solid var(--line); border-radius: var(--radius-lg);
   background: var(--panel); color: var(--text); min-width: 130px; max-width: 260px;
 }
-select:hover, input[type=text]:hover, input[type=date]:hover { border-color: var(--line-hover); }
-input[type=text] { min-width: 200px; }
+select:hover, input[type=text]:hover, input[type=date]:hover, input:not([type]):hover { border-color: var(--line-hover); }
+input[type=text], input:not([type]) { min-width: 200px; }
 
 /* 分段控件：轨道 --secondary，选中块回到页面底色 */
 .range-group { display: flex; gap: 2px; padding: 2px; background: var(--secondary); border-radius: var(--radius-lg); }
@@ -369,10 +371,11 @@ pre.json {
 
 table.st-table td { vertical-align: middle; }
 table.st-table th { white-space: nowrap; }
-table.st-table input[type=text] {
-  min-width: 0; width: 74px; height: 26px; padding: 0 6px; font-size: var(--text-ui-sm);
-  border-radius: var(--radius-md); text-align: right;
+table.st-table input.st-num, table.st-table input.st-alias {
+  min-width: 0; height: 26px; padding: 0 6px; font-size: var(--text-ui-sm);
+  border-radius: var(--radius-md); background: var(--panel);
 }
+table.st-table input.st-num { width: 74px; text-align: right; font-variant-numeric: tabular-nums; }
 table.st-table input.st-alias { width: 148px; text-align: left; }
 table.st-table select.st-cur { height: 26px; padding: 0 4px; font-size: var(--text-ui-sm); border-radius: var(--radius-md); }
 /* 取消勾选的行压暗，但仍可编辑（首列保持原样，方便点回来） */
