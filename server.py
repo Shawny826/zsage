@@ -521,11 +521,23 @@ def build_where(f: dict):
     return (" AND ".join(clauses) if clauses else "1=1"), params
 
 
+def generation_ms(duration_ms, ttft_ms):
+    """解码段时长：耗时 - 首字；首字缺失（约三成记录）退用整段耗时。"""
+    if not duration_ms:
+        return None
+    if ttft_ms and duration_ms > ttft_ms:
+        return duration_ms - ttft_ms
+    if not ttft_ms:
+        return duration_ms
+    return None
+
+
 def row_to_request(row: sqlite3.Row) -> dict:
     input_tokens = row["input_tokens"] or 0
     cache_read = row["cache_read_input_tokens"] or 0
     cache_write = row["cache_creation_input_tokens"] or 0
     output_tokens = row["output_tokens"] or 0
+    gen_ms = generation_ms(row["duration_ms"], row["time_to_first_token_ms"])
     cost = PRICING.cost(
         row["model_id"], row["started_at"], input_tokens, cache_read, cache_write, output_tokens
     )
@@ -535,6 +547,7 @@ def row_to_request(row: sqlite3.Row) -> dict:
         "completed_at": row["completed_at"],
         "duration_ms": row["duration_ms"],
         "ttft_ms": row["time_to_first_token_ms"],
+        "tps": round(output_tokens / (gen_ms / 1000), 1) if gen_ms and output_tokens else None,
         "provider_id": row["provider_id"],
         "model_id": row["model_id"],
         "variant": row["variant"],
@@ -606,6 +619,7 @@ def blank_bucket():
         "cost": 0.0, "cost_input": 0.0, "cost_cache_read": 0.0,
         "cost_cache_write": 0.0, "cost_output": 0.0,
         "_ms": 0, "_ms_n": 0, "_ttft": 0, "_ttft_n": 0, "_unpriced": 0,
+        "_tps_tokens": 0, "_tps_ms": 0,
         "_first": None, "_last": None,
     }
 
@@ -635,6 +649,12 @@ def add_to(bucket: dict, req: dict) -> None:
     if req["ttft_ms"]:
         bucket["_ttft"] += req["ttft_ms"]
         bucket["_ttft_n"] += 1
+    # 输出速度（TPS）：解码段 = 耗时 - 首字；首字缺失退用整段耗时。
+    # 按 token 与时长分别累计、最后相除（时间加权），短请求的小样本速度不会带偏均值。
+    gen_ms = generation_ms(req["duration_ms"], req["ttft_ms"])
+    if gen_ms and tk["output"]:
+        bucket["_tps_tokens"] += tk["output"]
+        bucket["_tps_ms"] += gen_ms
     ts = req["started_at"]
     bucket["_first"] = ts if bucket["_first"] is None else min(bucket["_first"], ts)
     bucket["_last"] = ts if bucket["_last"] is None else max(bucket["_last"], ts)
@@ -644,6 +664,9 @@ def finalize(bucket: dict) -> dict:
     out = {k: v for k, v in bucket.items() if not k.startswith("_")}
     out["avg_ms"] = round(bucket["_ms"] / bucket["_ms_n"], 1) if bucket["_ms_n"] else None
     out["avg_ttft_ms"] = round(bucket["_ttft"] / bucket["_ttft_n"], 1) if bucket["_ttft_n"] else None
+    out["avg_tps"] = (
+        round(bucket["_tps_tokens"] / (bucket["_tps_ms"] / 1000), 1) if bucket["_tps_ms"] else None
+    )
     out["error_rate"] = round(bucket["errors"] / bucket["requests"], 4) if bucket["requests"] else 0.0
     billed_input = out["input_fresh"] + out["cache_read"]
     out["cache_hit_rate"] = round(out["cache_read"] / billed_input, 4) if billed_input else 0.0
@@ -1250,6 +1273,8 @@ class Handler(BaseHTTPRequestHandler):
                 return row["duration_ms"] or 0
             if sort_key == "ttft":
                 return row["ttft_ms"] or 0
+            if sort_key == "tps":
+                return row["tps"] or 0
             return row["started_at"]
 
         rows.sort(key=key, reverse=(order != "asc"))
@@ -1339,7 +1364,7 @@ class Handler(BaseHTTPRequestHandler):
             "started_at_local", "model_id", "provider_id", "project", "session_title", "agent",
             "query_source", "status", "attempt_index", "retry_count",
             "input_tokens", "input_fresh", "cache_read", "cache_write", "output_tokens",
-            "reasoning_tokens", "total_tokens", "duration_ms", "ttft_ms",
+            "reasoning_tokens", "total_tokens", "duration_ms", "ttft_ms", "output_tps",
             f"cost_{PRICING.display_currency}", "cost_input", "cost_cache_read",
             "cost_cache_write", "cost_output", "priced", "price_rule", "error",
         ])
@@ -1352,7 +1377,8 @@ class Handler(BaseHTTPRequestHandler):
                 row["agent"], row["query_source"], row["status"], row["attempt_index"] + 1,
                 row["retry_count"], tk["input"], tk["input_fresh"], tk["cache_read"],
                 tk["cache_write"], tk["output"], tk["reasoning"], tk["total"],
-                row["duration_ms"], row["ttft_ms"], round(cost["total"], 6),
+                row["duration_ms"], row["ttft_ms"], "" if row["tps"] is None else row["tps"],
+                round(cost["total"], 6),
                 round(cost["components"]["input"], 6), round(cost["components"]["cache_read"], 6),
                 round(cost["components"]["cache_write"], 6), round(cost["components"]["output"], 6),
                 "yes" if cost["priced"] else "no", cost.get("rule") or "",

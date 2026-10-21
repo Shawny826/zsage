@@ -49,6 +49,9 @@ function fmtMs(ms) {
 
 const fmtPct = (r) => ((r || 0) * 100).toFixed(1) + '%';
 
+/** 输出速度（tokens/s），时间加权均值，没有可算样本时为 null */
+const fmtTps = (v) => (v == null ? '—' : v.toFixed(1));
+
 function fmtTime(ms, withDate = true) {
   if (!ms) return '—';
   const d = new Date(ms);
@@ -486,6 +489,7 @@ const MODEL_COLUMNS = [
   { key: 'cost', label: '费用', fmt: fmtMoney },
   { key: 'cost_share', label: '占比', fmt: (v) => ((v || 0) * 100).toFixed(1) + '%' },
   { key: 'avg_ms', label: '平均耗时', fmt: fmtMs },
+  { key: 'avg_tps', label: '输出 TPS', fmt: fmtTps },
   { key: 'error_rate', label: '错误率', fmt: fmtPct },
 ];
 
@@ -510,7 +514,8 @@ function renderModelTable() {
   </tr>`).join('');
   const totals = ['合计', state.summary.kpi.requests, state.summary.kpi.input_fresh,
     state.summary.kpi.cache_read, state.summary.kpi.output, state.summary.kpi.cache_hit_rate,
-    state.summary.kpi.cost, 1, state.summary.kpi.avg_ms, state.summary.kpi.error_rate];
+    state.summary.kpi.cost, 1, state.summary.kpi.avg_ms, state.summary.kpi.avg_tps,
+    state.summary.kpi.error_rate];
   const foot = `<tfoot><tr>${totals.map((v, i) => `<td class="${i === 0 ? 'l' : 'num'}">${i === 0 ? v
     : MODEL_COLUMNS[i] ? MODEL_COLUMNS[i].fmt(v) : v}</td>`).join('')}</tr></tfoot>`;
   el('an-model-table').innerHTML = `<div class="table-wrap"><table class="data"><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${foot}</table></div>`;
@@ -691,22 +696,22 @@ function renderEvents() {
   const rows = data.items.map((r) => `<tr class="clickable" data-id="${r.id}">
     <td class="l">${fmtTime(r.started_at)}</td>
     <td class="l">${esc(r.model_id)}${r.attempt_index ? ` <span class="tag mut">#${r.attempt_index + 1}</span>` : ''}</td>
-    <td class="l muted">${esc((r.project_dir || '').split('\\').pop() || '—')}</td>
-    <td class="l muted">${esc(r.query_source || '')}</td>
     <td class="num">${fmtTok(r.tokens.input)}</td>
     <td class="num muted">${fmtTok(r.tokens.cache_read)}</td>
     <td class="num">${fmtTok(r.tokens.output)}</td>
     <td class="num">${fmtMoney(r.cost.total)}${r.cost.priced ? '' : '<span class="tag est">未定价</span>'}</td>
     <td class="num">${fmtMs(r.duration_ms)}</td>
     <td class="num">${fmtMs(r.ttft_ms)}</td>
+    <td class="num">${fmtTps(r.tps)}</td>
     <td>${STATUS_TAG[r.status] || esc(r.status)}</td>
+    <td class="l muted">${esc((r.project_dir || '').split('\\').pop() || '—')}</td>
   </tr>`).join('');
 
   el('ev-table').innerHTML = `<div class="table-wrap"><table class="data">
     <thead><tr>${th('started_at', '时间', 'l')}
-      <th class="l">模型</th><th class="l">项目</th><th class="l">来源</th>
+      <th class="l">模型</th>
       ${th('tokens', '输入(含缓存)')}<th>缓存命中</th><th>输出</th>${th('cost', '费用')}
-      ${th('duration', '耗时')}${th('ttft', '首字')}<th>状态</th></tr></thead>
+      ${th('duration', '耗时')}${th('ttft', '首字')}${th('tps', 'TPS')}<th>状态</th><th class="l">项目</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="11"><div class="empty">没有符合条件的请求</div></td></tr>'}</tbody>
   </table></div>`;
 
@@ -787,6 +792,7 @@ async function openDrawer(id) {
       ${row('会话', `${esc(r.session_title || '—')}<div class="muted" style="font-size:var(--text-ui-sm)">${esc(r.session_id || '')}</div>`)}
       ${row('Agent / 来源', `${esc(r.agent || '—')} · ${esc(r.query_source || '')}`)}
       ${row('耗时 / 首字', `${fmtMs(r.duration_ms)} / ${fmtMs(r.ttft_ms)}`)}
+      ${row('输出 TPS', fmtTps(r.tps) === '—' ? '—' : `${fmtTps(r.tps)} <span class="muted">tok/s（输出 ÷ 耗时−首字）</span>`)}
       ${row('尝试 / 重试', `${r.attempt_index + 1} 次调用 · 重试 ${r.retry_count}`)}
       ${row('工具调用数', fmtInt(r.tool_call_count))}
       ${row('turn / trace', `<span class="muted" style="font-size:var(--text-ui-sm)">${esc(r.turn_id || '')}<br>${esc(r.trace_id || '')}</span>`)}
